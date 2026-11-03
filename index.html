@@ -449,8 +449,9 @@ h2.sec{font-family:var(--f-display);font-size:19px;margin:0}
       <select id="ragSel" aria-label="RAG"><option value="">Any RAG</option><option value="R">Red</option><option value="A">Amber</option><option value="G">Green</option></select>
     </div>
     <div class="filters">
-      <select id="flagSel" aria-label="Flag"><option value="">Any flag</option><option>Chronic</option><option value="Silent - confirm">Silent, confirm</option><option value="Open">Not flagged</option></select>
-      <select id="escSel" aria-label="Escalation"><option value="">Any escalation</option><option value="1">L1 · HOD</option><option value="2">L2 · DRO / PA (G)</option><option value="3">L3 · Collector</option><option value="23">L2 and L3</option></select>
+      <select id="meetSel" aria-label="Meeting date"><option value="">Any meeting date</option></select>
+      <select id="flagSel" aria-label="Flag" hidden><option value="">Any flag</option><option>Chronic</option><option value="Silent - confirm">Silent, confirm</option><option value="Open">Not flagged</option></select>
+      <select id="escSel" aria-label="Escalation" hidden><option value="">Any escalation</option><option value="1">L1 · HOD</option><option value="2">L2 · DRO / PA (G)</option><option value="3">L3 · Collector</option><option value="23">L2 and L3</option></select>
       <select id="dueSel" aria-label="Target date"><option value="">Any target date</option><option value="overdue">Overdue</option><option value="7">Due in 7 days</option><option value="30">Due in 30 days</option><option value="none">No target date</option><option value="has">Has target date</option></select>
       <select id="ageSel" aria-label="Age"><option value="">Any age</option><option value="0-4">0–4 weeks</option><option value="4-8">4–8 weeks</option><option value="8-12">8–12 weeks</option><option value="12-999">12+ weeks</option></select>
       <select id="sortSel" aria-label="Sort"><option value="">Sort: priority</option><option value="dept">Sort: department (A–Z)</option><option value="age">Sort: oldest first</option><option value="due">Sort: target date</option><option value="times">Sort: most meetings</option><option value="quiet">Sort: longest without update</option><option value="id">Sort: Action ID</option></select>
@@ -574,7 +575,7 @@ const splitDeps=s=>String(s||"").split(/\s*\/\s*/).map(x=>x.trim()).filter(Boole
 const store=(k,v)=>{try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}};
 
 let items=[], db=null, user=null, canWrite=true, me=null, loaded=false;
-const state={cstart:"",cdep:"",cact:"",tally:"",q:"",dep:"",rag:"",flag:"",esc:"",due:"",age:"",sort:"",st:"active",fuDep:"",asof:todayISO(),tab:"items"};
+const state={meet:"",cstart:"",cdep:"",cact:"",tally:"",q:"",dep:"",rag:"",flag:"",esc:"",due:"",age:"",sort:"",st:"active",fuDep:"",asof:todayISO(),tab:"items"};
 $("#asof").value=state.asof;
 const savedSig=store("hod.sig"); if(savedSig) $("#sig").value=savedSig;
 
@@ -637,6 +638,7 @@ function filtered(){
     else if(state.st==="active"){ if(!active(it)) return false; }
     else if(state.st && it.status!==state.st) return false;
     if(!depMatch(it,state.dep)) return false;
+    if(state.meet&&!meetDates(it).has(state.meet)) return false;
     if(state.cstart&&!(it.first||"").startsWith(state.cstart)) return false;
     if(state.cdep&&![it.owner,it.officer,it.support].join(" ").toLowerCase().includes(state.cdep.toLowerCase())) return false;
     if(state.cact&&![it.action,it.id,(latestOf(it)||{}).t].join(" ").toLowerCase().includes(state.cact.toLowerCase())) return false;
@@ -696,6 +698,12 @@ function elapsed(it){
   const main=d<14?`${d} day${d===1?"":"s"}`:d<90?`${w} weeks`:`${m} months`;
   return `${main}<span class="sub ro">${d} days${active(it)?"":" (closed)"}</span>`;
 }
+function meetDates(it){const m=new Set([it.first,it.last].filter(Boolean));for(const h of it.history||[])if(h&&h.d&&(h.src==="minutes"||!h.src))m.add(h.d);return m}
+function renderMeetSel(){
+  const el=$("#meetSel");if(!el)return;const all=new Set();items.forEach(it=>meetDates(it).forEach(d=>all.add(d)));
+  const ds=[...all].sort().reverse();
+  el.innerHTML=`<option value="">Any meeting date</option>`+ds.map(d=>`<option value="${d}" ${d===state.meet?"selected":""}>Meeting of ${dmy(d)}</option>`).join("");
+}
 function renderStartSel(){
   const el=$("#cfStart");if(!el)return;const cur=state.cstart;
   const ms=[...new Set(items.map(i=>(i.first||"").slice(0,7)).filter(Boolean))].sort().reverse();
@@ -703,7 +711,7 @@ function renderStartSel(){
   el.innerHTML=`<option value="">Any</option>`+ms.map(m=>`<option value="${m}" ${m===cur?"selected":""}>${MN[+m.slice(5,7)-1]} ${m.slice(0,4)}</option>`).join("");
 }
 function renderList(){
-  syncColF();renderStartSel();const mob=window.innerWidth<=860;
+  syncColF();renderStartSel();renderMeetSel();const mob=window.innerWidth<=860;
   const rows=filtered();
   $("#count").textContent=loaded?`${rows.length} of ${items.length} items`:"";
   if(!loaded){return}
@@ -1148,7 +1156,7 @@ $("#q").addEventListener("input",e=>{state.q=e.target.value;renderList()});
 $("#dep").addEventListener("change",e=>{state.dep=e.target.value;renderList()});
 $("#ragSel").addEventListener("change",e=>{state.rag=e.target.value;renderList()});
 [["flagSel","flag"],["escSel","esc"],["dueSel","due"],["ageSel","age"],["sortSel","sort"]].forEach(([id,k])=>$("#"+id).addEventListener("change",e=>{state[k]=e.target.value;renderList()}));
-$("#clearF").addEventListener("click",()=>{Object.assign(state,{cstart:"",cdep:"",cact:"",tally:"",q:"",dep:"",rag:"",flag:"",esc:"",due:"",age:"",sort:"",st:"active"});
+$("#clearF").addEventListener("click",()=>{$("#meetSel").value="";Object.assign(state,{meet:"",cstart:"",cdep:"",cact:"",tally:"",q:"",dep:"",rag:"",flag:"",esc:"",due:"",age:"",sort:"",st:"active"});
   ["q","dep","ragSel","flagSel","escSel","dueSel","ageSel","sortSel"].forEach(id=>$("#"+id).value="");$("#st").value="active";render()});
 $("#st").addEventListener("change",e=>{state.st=e.target.value;state.tally="";render()});
 $("#asof").addEventListener("change",e=>{state.asof=e.target.value||todayISO();render()});
@@ -1160,6 +1168,7 @@ $("#cfDep").addEventListener("input",e=>{state.cdep=e.target.value.trim();render
 $("#cfAct").addEventListener("input",e=>{state.cact=e.target.value.trim();renderList()});
 const drive=(id,v)=>{const el=$("#"+id);el.value=v;el.dispatchEvent(new Event("change"))};
 $("#cfSt").addEventListener("change",e=>drive("st",e.target.value));
+$("#meetSel").addEventListener("change",e=>{state.meet=e.target.value;renderList()});
 $("#cfStart").addEventListener("change",e=>{state.cstart=e.target.value;renderList()});
 $("#cfDue").addEventListener("change",e=>drive("dueSel",e.target.value));
 $("#cfAge").addEventListener("change",e=>drive("ageSel",e.target.value));
