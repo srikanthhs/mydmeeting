@@ -25,7 +25,7 @@ img{max-width:100%}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script type="module">
 import {initializeApp} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-import {getAuth,signInAnonymously} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+import {getAuth,signInAnonymously,signInWithEmailAndPassword,signOut,sendPasswordResetEmail,onAuthStateChanged} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 import {initializeFirestore,persistentLocalCache,collection,doc,getDoc,setDoc,updateDoc,onSnapshot} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
 /* Firebase project "mydmeeting-43bc1" (tracker only). Records live in the "hodActions" collection. */
@@ -38,16 +38,19 @@ const firebaseConfig={
   appId:"1:608397252314:web:473c4edc6dd00897cbb7e3"
 };
 const COL="hodActions";
-/* SHA-256 of the editing passcode. Change it by replacing this hash. */
-const EDIT_HASH="aaaa98bf66bb04c8bcb91127e1fe0b8b8b148a756a381e428d4e9d00f79e2552";
 const LS={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{v==null?localStorage.removeItem(k):localStorage.setItem(k,v)}catch(e){}}};
-const isEditor=()=>LS.get("hod_editor_ok")===EDIT_HASH&&!!LS.get("hod_editor_name");
-const sha=async s=>[...new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(s)))].map(b=>b.toString(16).padStart(2,"0")).join("");
+/* Admins sign in with an email + password account created in Firebase Authentication.
+   Everyone else is signed in anonymously and can only read (enforced by Firestore rules). */
+let auth=null;
+const isEditor=()=>!!(auth&&auth.currentUser&&!auth.currentUser.isAnonymous);
+const adminName=()=>LS.get("hod_editor_name")||(auth&&auth.currentUser&&auth.currentUser.email)||"Admin";
 
 let fs=null;
 try{
   const app=initializeApp(firebaseConfig);
-  try{await signInAnonymously(getAuth(app))}catch(e){console.warn("[HOD] Anonymous sign-in failed; continuing without it",e)}
+  auth=getAuth(app);
+  await new Promise(r=>{const off=onAuthStateChanged(auth,()=>{off();r()})});
+  if(!auth.currentUser){try{await signInAnonymously(auth)}catch(e){console.warn("[HOD] Anonymous sign-in failed; continuing without it",e)}}
   fs=initializeFirestore(app,{localCache:persistentLocalCache()});
 }catch(e){console.error("[HOD] Firebase start failed",e);}
 
@@ -63,7 +66,7 @@ const db=fs&&{
     update:d=>{if(!isEditor())return Promise.reject({code:"invalid_argument"});return updateDoc(ref,d)}}}
 };
 const user={
-  id:async()=>LS.get("hod_editor_name")||"Viewer",
+  id:async()=>isEditor()?adminName():"Viewer",
   can:async()=>isEditor(),
   profiles:async ids=>Object.fromEntries(ids.map(i=>[i,{id:i,name:i}]))
 };
@@ -77,14 +80,10 @@ window.__hodBridgeReady(name=>({db,user,downloads}[name]??null));
 function addHeaderControls(){
   const bar=document.querySelector(".head-actions");if(!bar)return;
   const lock=document.createElement("button");lock.type="button";lock.className="btn";lock.id="lockBtn";
-  lock.textContent=isEditor()?`Editing as ${LS.get("hod_editor_name")} · Lock`:"Unlock editing";
+  lock.textContent=isEditor()?`Admin: ${adminName()} · Log out`:"Admin login";
   lock.onclick=async()=>{
-    if(isEditor()){LS.set("hod_editor_ok",null);location.reload();return}
-    const p=window.prompt("Editing passcode");if(!p)return;
-    if(await sha(p.trim())!==EDIT_HASH){alert("That passcode is not correct.");return}
-    const n=(window.prompt("Your name and designation, shown in each item's history (e.g. PA (G))",LS.get("hod_editor_name")||"")||"").trim();
-    if(!n){alert("Enter your name to unlock editing.");return}
-    LS.set("hod_editor_ok",EDIT_HASH);LS.set("hod_editor_name",n);location.reload();
+    if(isEditor()){if(!confirm("Log out of admin?"))return;await signOut(auth);location.reload();return}
+    openLogin();
   };
   bar.prepend(lock);
   if(isEditor()&&db){
@@ -92,6 +91,36 @@ function addHeaderControls(){
     const inp=document.createElement("input");inp.type="file";inp.accept=".xlsx,.xls,.csv";inp.hidden=true;lab.appendChild(inp);
     inp.onchange=()=>importFile(inp);bar.insertBefore(lab,document.getElementById("newBtn"));
   }
+}
+function openLogin(){
+  let dlg=document.getElementById("loginDlg");
+  if(!dlg){
+    dlg=document.createElement("dialog");dlg.id="loginDlg";dlg.className="login-dlg";
+    dlg.innerHTML=`<form method="dialog" class="login-form">
+      <h2>Admin login</h2>
+      <p class="ro">Only admins can add, update or close action items. Everyone else can view.</p>
+      <label class="field"><span>Email</span><input type="email" id="lgEmail" autocomplete="username" required></label>
+      <label class="field"><span>Password</span><input type="password" id="lgPass" autocomplete="current-password" required></label>
+      <label class="field"><span>Your name and designation (shown in history)</span><input type="text" id="lgName" placeholder="e.g. PA (G)"></label>
+      <div class="ro" id="lgMsg" role="status"></div>
+      <div class="login-acts"><button type="button" class="btn ghost" id="lgForgot">Forgot password?</button><span style="flex:1"></span><button type="button" class="btn" id="lgCancel">Cancel</button><button type="submit" class="btn primary" id="lgGo">Log in</button></div>
+    </form>`;
+    document.body.appendChild(dlg);
+    const q=id=>dlg.querySelector("#"+id),msg=t=>{q("lgMsg").textContent=t};
+    const why=e=>({"auth/invalid-credential":"Wrong email or password.","auth/wrong-password":"Wrong email or password.","auth/user-not-found":"No admin account with this email.",
+      "auth/invalid-email":"Enter a valid email address.","auth/too-many-requests":"Too many attempts. Wait a few minutes and try again.",
+      "auth/operation-not-allowed":"Email login is not switched on in Firebase yet (Authentication, Sign-in method, Email/Password).",
+      "auth/network-request-failed":"No internet connection."}[e&&e.code]||("Login failed: "+((e&&e.message)||e)));
+    q("lgCancel").onclick=()=>dlg.close();
+    q("lgForgot").onclick=async()=>{const em=q("lgEmail").value.trim();if(!em){msg("Type your email first, then tap Forgot password.");return}
+      try{await sendPasswordResetEmail(auth,em);msg("A password reset link has been sent to "+em+".")}catch(e){msg(why(e))}};
+    dlg.querySelector("form").addEventListener("submit",async ev=>{ev.preventDefault();const go=q("lgGo");go.disabled=true;msg("Logging in...");
+      try{if(!auth)throw {message:"Could not reach Firebase."};await signInWithEmailAndPassword(auth,q("lgEmail").value.trim(),q("lgPass").value);
+        const n=q("lgName").value.trim();LS.set("hod_editor_name",n||null);location.reload()}
+      catch(e){msg(why(e));go.disabled=false}});
+  }
+  dlg.querySelector("#lgName").value=LS.get("hod_editor_name")||"";dlg.querySelector("#lgMsg").textContent="";
+  dlg.showModal();setTimeout(()=>dlg.querySelector("#lgEmail").focus(),50);
 }
 function toISO(v){
   if(!v)return "";if(v instanceof Date&&!isNaN(v))return new Date(v.getTime()-v.getTimezoneOffset()*6e4).toISOString().slice(0,10);
@@ -112,7 +141,7 @@ function importFile(input){
       const hd=rows[hi].map(c=>String(c).trim().toLowerCase()),col=re=>hd.findIndex(h=>re.test(h));
       const C={id:col(/^id$/),owner:col(/^owner/),support:col(/^supporting/),action:col(/^action item/),first:col(/^first raised/),last:col(/^last raised/),
         times:col(/^meetings raised/),latest:col(/^latest status/),due:col(/^(due|target) date/),status:col(/^status$/),ev:col(/^evidence/),rm:col(/^remarks/),off:col(/^responsible officer/)};
-      let add=0,skip=0;const by=LS.get("hod_editor_name")||"";
+      let add=0,skip=0;const by=adminName();
       for(const r of rows.slice(hi+1)){
         const id=String(r[C.id]||"").trim();if(!/^A-\d+/.test(id)||!String(r[C.action]||"").trim())continue;
         const ref=doc(fs,COL,id);if((await getDoc(ref)).exists()){skip++;continue}
@@ -202,6 +231,13 @@ body.side-collapsed .brand{padding-left:0;justify-content:center}
 body.side-collapsed .side-tog svg{transform:rotate(180deg)}
 body.side-collapsed nav.tabs button{justify-content:center;padding-inline:0}
 .menu-btn{display:none}
+.login-dlg{border:1px solid var(--line);border-radius:12px;padding:0;width:min(420px,calc(100vw - 32px));background:var(--paper);color:var(--ink);box-shadow:var(--shadow)}
+.login-dlg::backdrop{background:rgba(10,15,20,.45)}
+.login-form{display:flex;flex-direction:column;gap:12px;padding:20px}
+.login-form h2{font-family:var(--f-display);font-size:20px;margin:0}
+.login-form p{margin:0}
+.login-form input{width:100%}
+.login-acts{display:flex;gap:8px;align-items:center}
 .back-btn:not([hidden]){display:inline-flex}
 .side-scrim{position:fixed;inset:0;background:rgba(10,15,20,.38);z-index:16}
 .title-row{display:flex;align-items:center;gap:12px}
