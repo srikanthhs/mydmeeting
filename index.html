@@ -257,7 +257,7 @@ main{padding-block:18px 60px}
 .filters select{flex:0 1 220px}
 .count{color:var(--muted);font-size:12.5px;margin-left:auto}
 .list{background:var(--paper);border:1px solid var(--line);border-radius:8px;overflow:hidden}
-.row{display:grid;grid-template-columns:minmax(150px,190px) minmax(0,1fr) 124px 128px 104px 76px;gap:12px;align-items:start;padding:11px 14px;border-top:1px solid var(--line);cursor:pointer;background:none;border-left:0;border-right:0;border-bottom:0;width:100%;text-align:left}
+.row{display:grid;grid-template-columns:minmax(150px,190px) minmax(0,1fr) 124px 96px 124px 100px;gap:12px;align-items:start;padding:11px 14px;border-top:1px solid var(--line);cursor:pointer;background:none;border-left:0;border-right:0;border-bottom:0;width:100%;text-align:left}
 .row:first-child{border-top:0}
 .row:hover{background:var(--soft)}
 .row.hdr{cursor:default;background:var(--soft);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;padding-block:8px}
@@ -286,6 +286,8 @@ main{padding-block:18px 60px}
 .f-open::before{display:none}
 .f-closed{background:var(--done-soft);color:var(--done)}
 .due-late{color:var(--overdue);font-weight:600}
+.row .sub{display:block;font-size:11.5px;font-weight:400;margin-top:2px}
+.row .due-late .sub{color:var(--overdue)}
 .empty{padding:40px 20px;text-align:center;color:var(--muted)}
 .notice{background:var(--silent-soft);color:var(--ink);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px}
 .notice[hidden]{display:none}
@@ -383,8 +385,10 @@ h2.sec{font-family:var(--f-display);font-size:19px;margin:0}
   .tally{grid-template-columns:repeat(3,minmax(0,1fr))}
   .row{grid-template-columns:minmax(0,1fr);gap:4px 10px}
   .row.hdr,.row.cf{display:none}
-  .row .c-status,.row .c-flag,.row .c-due,.row .c-wk{grid-column:1}
-  .row .c-meta{grid-column:1;display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:4px}
+  .row .c-status,.row .c-start,.row .c-due,.row .c-wk{grid-column:1}
+  .row .c-meta{grid-column:1;display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;margin-top:6px;font-size:12.5px}
+  .row .sub{display:inline;margin-left:4px}
+  .row .c-wk .sub{display:none}
   .fu,.imp,.score-grid{grid-template-columns:1fr}
   .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
   .ag-row{grid-template-columns:24px 52px minmax(0,1fr)}
@@ -454,14 +458,14 @@ h2.sec{font-family:var(--f-display);font-size:19px;margin:0}
       <span class="count" id="count"></span>
     </div>
     <div class="list" id="list">
-      <div class="row hdr"><span><button type="button" class="btn ghost" id="sortDept" style="padding:0;font:inherit;letter-spacing:inherit;text-transform:inherit;color:inherit" title="Sort by department">Department ↕</button></span><span>Action item</span><span>Status</span><span>RAG / flag</span><span>Target</span><span>Weeks open</span></div>
+      <div class="row hdr"><span><button type="button" class="btn ghost" id="sortDept" style="padding:0;font:inherit;letter-spacing:inherit;text-transform:inherit;color:inherit" title="Sort by department">Department ↕</button></span><span>Action item</span><span>Status</span><span>Start date</span><span>Target date</span><span>Time elapsed</span></div>
       <div class="row cf" id="colF">
         <input type="search" id="cfDep" placeholder="Filter department" aria-label="Filter by department">
         <input type="search" id="cfAct" placeholder="Filter action item" aria-label="Filter by action item">
         <select id="cfSt" aria-label="Filter by status"><option value="active">Active</option><option value="">Any</option><option>Open</option><option>In progress</option><option>Done</option><option>Dropped</option></select>
-        <select id="cfRag" aria-label="Filter by RAG or flag"><option value="">Any</option><option value="R">Red</option><option value="A">Amber</option><option value="G">Green</option><option value="f:Chronic">Chronic</option><option value="f:Silent - confirm">Silent</option></select>
+        <select id="cfStart" aria-label="Filter by start month"><option value="">Any</option></select>
         <select id="cfDue" aria-label="Filter by target date"><option value="">Any</option><option value="overdue">Overdue</option><option value="7">Next 7 days</option><option value="30">Next 30 days</option><option value="none">No date</option></select>
-        <select id="cfAge" aria-label="Filter by weeks open"><option value="">Any</option><option value="0-4">0–4</option><option value="4-8">4–8</option><option value="8-12">8–12</option><option value="12-999">12+</option></select>
+        <select id="cfAge" aria-label="Filter by time elapsed"><option value="">Any</option><option value="0-4">Under 4 wks</option><option value="4-8">4–8 wks</option><option value="8-12">8–12 wks</option><option value="12-999">12+ wks</option></select>
       </div>
       <div id="listBody"><div class="empty">Loading action items from the tracker…</div></div>
     </div>
@@ -570,7 +574,7 @@ const splitDeps=s=>String(s||"").split(/\s*\/\s*/).map(x=>x.trim()).filter(Boole
 const store=(k,v)=>{try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}};
 
 let items=[], db=null, user=null, canWrite=true, me=null, loaded=false;
-const state={cdep:"",cact:"",tally:"",q:"",dep:"",rag:"",flag:"",esc:"",due:"",age:"",sort:"",st:"active",fuDep:"",asof:todayISO(),tab:"items"};
+const state={cstart:"",cdep:"",cact:"",tally:"",q:"",dep:"",rag:"",flag:"",esc:"",due:"",age:"",sort:"",st:"active",fuDep:"",asof:todayISO(),tab:"items"};
 $("#asof").value=state.asof;
 const savedSig=store("hod.sig"); if(savedSig) $("#sig").value=savedSig;
 
@@ -633,6 +637,7 @@ function filtered(){
     else if(state.st==="active"){ if(!active(it)) return false; }
     else if(state.st && it.status!==state.st) return false;
     if(!depMatch(it,state.dep)) return false;
+    if(state.cstart&&!(it.first||"").startsWith(state.cstart)) return false;
     if(state.cdep&&![it.owner,it.officer,it.support].join(" ").toLowerCase().includes(state.cdep.toLowerCase())) return false;
     if(state.cact&&![it.action,it.id,(latestOf(it)||{}).t].join(" ").toLowerCase().includes(state.cact.toLowerCase())) return false;
     if(state.rag && ragOf(it)!==state.rag) return false;
@@ -682,10 +687,23 @@ function renderDepSelect(){
 function syncColF(){
   const set=(id,v)=>{const el=$("#"+id);if(el&&document.activeElement!==el&&el.value!==v)el.value=v;if(el)el.classList.toggle("on",!!el.value&&!(id==="cfSt"&&el.value==="active"))};
   set("cfDep",state.cdep);set("cfAct",state.cact);set("cfSt",state.tally?"":state.st);
-  set("cfRag",state.rag||(state.flag==="Chronic"||state.flag==="Silent - confirm"?"f:"+state.flag:""));set("cfDue",["overdue","7","30","none"].includes(state.due)?state.due:"");set("cfAge",state.age);
+  set("cfStart",state.cstart);set("cfDue",["overdue","7","30","none"].includes(state.due)?state.due:"");set("cfAge",state.age);
+}
+function elapsed(it){
+  if(!it.first)return '<span class="ro">–</span>';
+  const end=active(it)?state.asof:(it.last||state.asof),d=Math.max(0,days(end,it.first));
+  const w=Math.floor(d/7),m=Math.floor(d/30.44);
+  const main=d<14?`${d} day${d===1?"":"s"}`:d<90?`${w} weeks`:`${m} months`;
+  return `${main}<span class="sub ro">${d} days${active(it)?"":" (closed)"}</span>`;
+}
+function renderStartSel(){
+  const el=$("#cfStart");if(!el)return;const cur=state.cstart;
+  const ms=[...new Set(items.map(i=>(i.first||"").slice(0,7)).filter(Boolean))].sort().reverse();
+  const MN=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  el.innerHTML=`<option value="">Any</option>`+ms.map(m=>`<option value="${m}" ${m===cur?"selected":""}>${MN[+m.slice(5,7)-1]} ${m.slice(0,4)}</option>`).join("");
 }
 function renderList(){
-  syncColF();
+  syncColF();renderStartSel();const mob=window.innerWidth<=860;
   const rows=filtered();
   $("#count").textContent=loaded?`${rows.length} of ${items.length} items`:"";
   if(!loaded){return}
@@ -695,9 +713,9 @@ function renderList(){
     <span class="dept">${esc(it.owner)}${it.officer?`<span class="off">${esc(it.officer)}</span>`:""}${it.support?`<span class="sup">with ${esc(it.support)}</span>`:""}</span>
     <span style="min-width:0"><div class="act">${esc(it.action)}<span class="id-sm">${esc(it.id)}</span></div>${l?`<div class="latest">${esc(l.t)}</div>`:""}</span>
     <span class="c-meta"><span class="c-status">${statusPill(it.status)}${escTag(it)}</span>
-    <span class="c-flag">${ragPill(it)} ${flagPill(it)}</span>
-    <span class="c-due num ${overdue(it)?"due-late":""}">${it.due?dmy(it.due):'<span class="ro">No date</span>'}</span>
-    <span class="c-wk num ro">${weeks(it)}${window.innerWidth<=860?" wks open":""}</span></span>
+    <span class="c-start num">${mob?'<span class="ro">Started </span>':""}${it.first?dmy(it.first):'<span class="ro">–</span>'}</span>
+    <span class="c-due num ${overdue(it)?"due-late":""}">${mob?'<span class="ro">Target </span>':""}${it.due?dmy(it.due):'<span class="ro">No date</span>'}${overdue(it)?`<span class="sub">${days(state.asof,it.due)} days overdue</span>`:(it.due&&active(it)?`<span class="sub ro">${days(it.due,state.asof)} days left</span>`:"")}</span>
+    <span class="c-wk num">${elapsed(it)}</span></span>
   </button>`}).join("");
 }
 
@@ -1130,7 +1148,7 @@ $("#q").addEventListener("input",e=>{state.q=e.target.value;renderList()});
 $("#dep").addEventListener("change",e=>{state.dep=e.target.value;renderList()});
 $("#ragSel").addEventListener("change",e=>{state.rag=e.target.value;renderList()});
 [["flagSel","flag"],["escSel","esc"],["dueSel","due"],["ageSel","age"],["sortSel","sort"]].forEach(([id,k])=>$("#"+id).addEventListener("change",e=>{state[k]=e.target.value;renderList()}));
-$("#clearF").addEventListener("click",()=>{Object.assign(state,{cdep:"",cact:"",tally:"",q:"",dep:"",rag:"",flag:"",esc:"",due:"",age:"",sort:"",st:"active"});
+$("#clearF").addEventListener("click",()=>{Object.assign(state,{cstart:"",cdep:"",cact:"",tally:"",q:"",dep:"",rag:"",flag:"",esc:"",due:"",age:"",sort:"",st:"active"});
   ["q","dep","ragSel","flagSel","escSel","dueSel","ageSel","sortSel"].forEach(id=>$("#"+id).value="");$("#st").value="active";render()});
 $("#st").addEventListener("change",e=>{state.st=e.target.value;state.tally="";render()});
 $("#asof").addEventListener("change",e=>{state.asof=e.target.value||todayISO();render()});
@@ -1142,8 +1160,7 @@ $("#cfDep").addEventListener("input",e=>{state.cdep=e.target.value.trim();render
 $("#cfAct").addEventListener("input",e=>{state.cact=e.target.value.trim();renderList()});
 const drive=(id,v)=>{const el=$("#"+id);el.value=v;el.dispatchEvent(new Event("change"))};
 $("#cfSt").addEventListener("change",e=>drive("st",e.target.value));
-$("#cfRag").addEventListener("change",e=>{const v=e.target.value;
-  if(v.startsWith("f:")){drive("ragSel","");drive("flagSel",v.slice(2))}else{if(state.flag==="Chronic"||state.flag==="Silent - confirm")drive("flagSel","");drive("ragSel",v)}});
+$("#cfStart").addEventListener("change",e=>{state.cstart=e.target.value;renderList()});
 $("#cfDue").addEventListener("change",e=>drive("dueSel",e.target.value));
 $("#cfAge").addEventListener("change",e=>drive("ageSel",e.target.value));
 $("#exportBtn").addEventListener("click",exportCsv);
