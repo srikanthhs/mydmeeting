@@ -180,9 +180,42 @@ textarea{width:100%;resize:vertical}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 .btn.ghost{background:transparent;border-color:transparent;color:var(--accent);padding-inline:6px}
 .btn:disabled{opacity:.5;cursor:not-allowed}
-nav.tabs{display:flex;gap:4px;margin-top:2px;overflow-x:auto;scrollbar-width:none}
-nav.tabs button{white-space:nowrap;flex:none;border:0;background:none;padding:10px 12px;border-bottom:3px solid transparent;cursor:pointer;font-weight:600;color:var(--muted)}
-nav.tabs button[aria-selected=true]{color:var(--ink);border-bottom-color:var(--accent)}
+/* collapsible sidebar */
+body{--side-w:236px;padding-left:var(--side-w);transition:padding-left .18s ease}
+body.side-collapsed{--side-w:68px}
+.side{position:fixed;top:0;left:0;bottom:0;width:var(--side-w);background:var(--paper);border-right:1px solid var(--line);z-index:15;display:flex;flex-direction:column;gap:10px;padding:calc(14px + env(safe-area-inset-top,0px)) 10px calc(12px + env(safe-area-inset-bottom,0px)) calc(10px + env(safe-area-inset-left,0px));transition:width .18s ease,transform .2s ease;overflow:hidden}
+.side-top{display:flex;align-items:center;gap:8px;min-height:36px}
+.brand{display:flex;align-items:center;gap:10px;flex:1;min-width:0;font-weight:700;white-space:nowrap;padding-left:4px}
+.brand img{width:30px;height:30px;flex:none}
+.side-tog,.menu-btn{border:1px solid var(--line);background:var(--paper);border-radius:6px;width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;flex:none;color:var(--muted);padding:0}
+.side-tog:hover,.menu-btn:hover{border-color:var(--accent);color:var(--ink)}
+.side-tog svg{transition:transform .18s ease}
+nav.tabs{display:flex;flex-direction:column;gap:2px;margin-top:4px}
+nav.tabs button{display:flex;align-items:center;gap:12px;white-space:nowrap;border:0;background:none;padding:10px 12px;border-radius:8px;cursor:pointer;font-weight:600;color:var(--muted);text-align:left;width:100%}
+nav.tabs button:hover{background:var(--soft);color:var(--ink)}
+nav.tabs button[aria-selected=true]{background:var(--accent-soft);color:var(--accent)}
+nav.tabs svg,.side-tog svg,.menu-btn svg{width:20px;height:20px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.side-foot{margin-top:auto;font-size:11.5px;color:var(--muted);padding:0 6px;white-space:nowrap}
+body.side-collapsed .lb{display:none}
+body.side-collapsed .side-top{flex-direction:column}
+body.side-collapsed .brand{padding-left:0;justify-content:center}
+body.side-collapsed .side-tog svg{transform:rotate(180deg)}
+body.side-collapsed nav.tabs button{justify-content:center;padding-inline:0}
+.menu-btn{display:none}
+.side-scrim{position:fixed;inset:0;background:rgba(10,15,20,.38);z-index:16}
+.title-row{display:flex;align-items:center;gap:12px}
+@media (max-width:860px){
+  body,body.side-collapsed{--side-w:0px;padding-left:0}
+  .side{width:min(280px,84vw);transform:translateX(-100%);z-index:17;box-shadow:var(--shadow)}
+  body.side-open .side{transform:none}
+  body.side-collapsed .lb{display:inline}
+  body.side-collapsed .side-top{flex-direction:row}
+  body.side-collapsed .brand{padding-left:4px;justify-content:flex-start}
+  body.side-collapsed nav.tabs button{justify-content:flex-start;padding-inline:12px}
+  .side-tog svg{transform:none!important}
+  .menu-btn{display:inline-flex}
+}
+@media (prefers-reduced-motion:reduce){body,.side,.side-tog svg{transition:none}}
 main{padding-block:18px 60px}
 .tally{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-bottom:14px}
 .tally button{text-align:left;background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:10px 12px;cursor:pointer;display:flex;flex-direction:column;gap:2px}
@@ -327,10 +360,29 @@ h2.sec{font-family:var(--f-display);font-size:19px;margin:0}
 @media (prefers-reduced-motion:no-preference){.drawer{animation:slide .18s ease-out}@keyframes slide{from{transform:translateX(24px);opacity:.6}}}
 </style>
 
+<aside class="side" id="side" aria-label="Sections">
+  <div class="side-top">
+    <span class="brand"><img src="/icon.svg" alt=""><span class="lb">HOD Tracker</span></span>
+    <button class="side-tog" id="sideTog" type="button" aria-controls="side" aria-label="Collapse sidebar" title="Collapse sidebar"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button>
+  </div>
+  <nav class="tabs" role="tablist" aria-orientation="vertical">
+    <button role="tab" id="tab-items" aria-selected="true" type="button" title="Action items"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg><span class="lb">Action items</span></button>
+    <button role="tab" id="tab-score" aria-selected="false" type="button" title="Scorecard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><span class="lb">Scorecard</span></button>
+    <button role="tab" id="tab-agenda" aria-selected="false" type="button" title="Meeting agenda"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V2.5h6V4M9 11l2 2 4-4M9 17h6"/></svg><span class="lb">Meeting agenda</span></button>
+    <button role="tab" id="tab-fu" aria-selected="false" type="button" title="Follow-up messages"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg><span class="lb">Follow-up messages</span></button>
+    <button role="tab" id="tab-import" aria-selected="false" type="button" title="Import minutes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3M7 8l5-5 5 5M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg><span class="lb">Import minutes</span></button>
+  </nav>
+  <div class="side-foot lb">Mayiladuthurai Collectorate</div>
+</aside>
+<div class="side-scrim" id="sideScrim" hidden></div>
+
 <header class="top"><div class="wrap">
-  <div>
-    <div class="eyebrow">Mayiladuthurai Collectorate · Monday HOD Review Meeting</div>
-    <h1>HOD Action Tracker</h1>
+  <div class="title-row">
+    <button class="menu-btn" id="menuBtn" type="button" aria-controls="side" aria-label="Open menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    <div>
+      <div class="eyebrow">Mayiladuthurai Collectorate · Monday HOD Review Meeting</div>
+      <h1>HOD Action Tracker</h1>
+    </div>
   </div>
   <div class="head-actions">
     <label class="asof" for="asof">As of <input type="date" id="asof"></label>
@@ -338,13 +390,6 @@ h2.sec{font-family:var(--f-display);font-size:19px;margin:0}
     <button class="btn primary" id="newBtn" type="button">New action</button>
   </div>
 </div>
-<div class="wrap"><nav class="tabs" role="tablist">
-  <button role="tab" id="tab-items" aria-selected="true" type="button">Action items</button>
-  <button role="tab" id="tab-score" aria-selected="false" type="button">Scorecard</button>
-  <button role="tab" id="tab-agenda" aria-selected="false" type="button">Meeting agenda</button>
-  <button role="tab" id="tab-fu" aria-selected="false" type="button">Follow-up messages</button>
-  <button role="tab" id="tab-import" aria-selected="false" type="button">Import minutes</button>
-</nav></div>
 </header>
 
 <main class="wrap">
@@ -996,5 +1041,23 @@ function notice(t){const n=$("#notice");n.textContent=t||"";n.hidden=!t}
 })();
 </script>
 
+<script>
+(function(){
+  const b=document.body,mq=matchMedia("(max-width:860px)");
+  const get=k=>{try{return localStorage.getItem(k)}catch(e){return null}},put=(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}};
+  const tog=document.getElementById("sideTog"),menu=document.getElementById("menuBtn"),scr=document.getElementById("sideScrim");
+  if(get("hod_side")==="c")b.classList.add("side-collapsed");
+  const open=()=>{b.classList.add("side-open");scr.hidden=false;menu.setAttribute("aria-expanded","true")};
+  const close=()=>{b.classList.remove("side-open");scr.hidden=true;menu.setAttribute("aria-expanded","false")};
+  function sync(){const m=mq.matches,c=b.classList.contains("side-collapsed");
+    const l=m?"Close menu":(c?"Expand sidebar":"Collapse sidebar");tog.setAttribute("aria-label",l);tog.title=l;tog.setAttribute("aria-expanded",String(m?b.classList.contains("side-open"):!c));
+    if(!m)close()}
+  tog.addEventListener("click",()=>{if(mq.matches){close();return}b.classList.toggle("side-collapsed");put("hod_side",b.classList.contains("side-collapsed")?"c":"");sync()});
+  menu.addEventListener("click",open);scr.addEventListener("click",close);
+  document.querySelectorAll("#side nav.tabs button").forEach(x=>x.addEventListener("click",()=>{if(mq.matches)close()}));
+  addEventListener("keydown",e=>{if(e.key==="Escape"&&b.classList.contains("side-open"))close()});
+  (mq.addEventListener?mq.addEventListener("change",sync):mq.addListener(sync));sync();
+})();
+</script>
 </body>
 </html>
