@@ -47,7 +47,7 @@ const sha=async s=>[...new Uint8Array(await crypto.subtle.digest("SHA-256",new T
 let fs=null;
 try{
   const app=initializeApp(firebaseConfig);
-  await signInAnonymously(getAuth(app));
+  try{await signInAnonymously(getAuth(app))}catch(e){console.warn("[HOD] Anonymous sign-in failed; continuing without it",e)}
   fs=initializeFirestore(app,{localCache:persistentLocalCache()});
 }catch(e){console.error("[HOD] Firebase start failed",e);}
 
