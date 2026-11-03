@@ -1,0 +1,1000 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#1f5a7a">
+<meta name="robots" content="noindex">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<style>
+:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+body{margin:0;font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+img{max-width:100%}
+[hidden]{display:none!important}
+</style>
+<script>
+/* Bridge: the tracker UI asks for capabilities through window.claude.use(name).
+   Here they are served by Firebase (Firestore + anonymous auth) instead. */
+(function(){
+  let resolve;const ready=new Promise(r=>resolve=r);
+  window.__hodBridgeReady=resolve;
+  window.claude={use:name=>ready.then(api=>api?api(name):null)};
+})();
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script type="module">
+import {initializeApp} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+import {getAuth,signInAnonymously} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+import {initializeFirestore,persistentLocalCache,collection,doc,getDoc,setDoc,updateDoc,onSnapshot} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+/* Firebase project shared with the Field Visits app (mydfi). Records live in the "hodActions" collection. */
+const firebaseConfig={
+  apiKey:"AIzaSyCfFP8Si8QYDO8M3g01gOUKlbMBayH0C10",
+  authDomain:"myd8-ef572.firebaseapp.com",
+  projectId:"myd8-ef572",
+  storageBucket:"myd8-ef572.firebasestorage.app",
+  messagingSenderId:"527468381186",
+  appId:"1:527468381186:web:348d183c2c890cbdfd531b"
+};
+const COL="hodActions";
+/* SHA-256 of the editing passcode. Change it by replacing this hash. */
+const EDIT_HASH="aaaa98bf66bb04c8bcb91127e1fe0b8b8b148a756a381e428d4e9d00f79e2552";
+const LS={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{v==null?localStorage.removeItem(k):localStorage.setItem(k,v)}catch(e){}}};
+const isEditor=()=>LS.get("hod_editor_ok")===EDIT_HASH&&!!LS.get("hod_editor_name");
+const sha=async s=>[...new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(s)))].map(b=>b.toString(16).padStart(2,"0")).join("");
+
+let fs=null;
+try{
+  const app=initializeApp(firebaseConfig);
+  await signInAnonymously(getAuth(app));
+  fs=initializeFirestore(app,{localCache:persistentLocalCache()});
+}catch(e){console.error("[HOD] Firebase start failed",e);}
+
+const idOf=p=>{const s=String(p).split("/");return s[s.length-1]};
+const wrapDoc=s=>({id:s.id,exists:s.exists(),data:()=>s.data(),metadata:s.metadata});
+const db=fs&&{
+  collection:()=>({onSnapshot:(next,err)=>onSnapshot(collection(fs,COL),{includeMetadataChanges:true},
+    q=>next({docs:q.docs.map(d=>({id:d.id,exists:true,data:()=>d.data()})),size:q.size,empty:q.empty,metadata:q.metadata}),
+    e=>{console.error("[HOD]",e);err&&err({code:e.code==="permission-denied"?"invalid_argument":"unavailable",message:e.message})})}),
+  doc:p=>{const ref=doc(fs,COL,idOf(p));return{
+    get:async()=>wrapDoc(await getDoc(ref)),
+    set:d=>{if(!isEditor())return Promise.reject({code:"invalid_argument"});return setDoc(ref,d)},
+    update:d=>{if(!isEditor())return Promise.reject({code:"invalid_argument"});return updateDoc(ref,d)}}}
+};
+const user={
+  id:async()=>LS.get("hod_editor_name")||"Viewer",
+  can:async()=>isEditor(),
+  profiles:async ids=>Object.fromEntries(ids.map(i=>[i,{id:i,name:i}]))
+};
+const downloads={save:async({filename,data})=>{
+  const url=URL.createObjectURL(data instanceof Blob?data:new Blob([data],{type:"text/csv;charset=utf-8"}));
+  const a=document.createElement("a");a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),4000);return {saved:true}}};
+window.__hodBridgeReady(name=>({db,user,downloads}[name]??null));
+
+/* ── Editor lock, Excel import ───────────────────────────────── */
+function addHeaderControls(){
+  const bar=document.querySelector(".head-actions");if(!bar)return;
+  const lock=document.createElement("button");lock.type="button";lock.className="btn";lock.id="lockBtn";
+  lock.textContent=isEditor()?`Editing as ${LS.get("hod_editor_name")} · Lock`:"Unlock editing";
+  lock.onclick=async()=>{
+    if(isEditor()){LS.set("hod_editor_ok",null);location.reload();return}
+    const p=window.prompt("Editing passcode");if(!p)return;
+    if(await sha(p.trim())!==EDIT_HASH){alert("That passcode is not correct.");return}
+    const n=(window.prompt("Your name and designation, shown in each item's history (e.g. PA (G))",LS.get("hod_editor_name")||"")||"").trim();
+    if(!n){alert("Enter your name to unlock editing.");return}
+    LS.set("hod_editor_ok",EDIT_HASH);LS.set("hod_editor_name",n);location.reload();
+  };
+  bar.prepend(lock);
+  if(isEditor()&&db){
+    const lab=document.createElement("label");lab.className="btn";lab.textContent="Import Excel";lab.title="Load the HOD Open Action Items Tracker .xlsx";
+    const inp=document.createElement("input");inp.type="file";inp.accept=".xlsx,.xls,.csv";inp.hidden=true;lab.appendChild(inp);
+    inp.onchange=()=>importFile(inp);bar.insertBefore(lab,document.getElementById("newBtn"));
+  }
+}
+function toISO(v){
+  if(!v)return "";if(v instanceof Date&&!isNaN(v))return new Date(v.getTime()-v.getTimezoneOffset()*6e4).toISOString().slice(0,10);
+  if(typeof v==="number")return new Date(Math.round((v-25569)*864e5)).toISOString().slice(0,10);
+  const s=String(v).trim(),m=s.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})$/);if(m)return `${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`;
+  return /^\d{4}-\d{2}-\d{2}/.test(s)?s.slice(0,10):"";
+}
+function importFile(input){
+  const f=input.files&&input.files[0];input.value="";if(!f)return;
+  if(typeof XLSX==="undefined"){alert("The Excel reader did not load. Check your connection.");return}
+  const rd=new FileReader();rd.onload=async ev=>{
+    try{
+      const wb=XLSX.read(new Uint8Array(ev.target.result),{type:"array",cellDates:true});
+      const ws=wb.Sheets["Open Actions"]||wb.Sheets[wb.SheetNames[0]];
+      const rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:""});
+      const hi=rows.findIndex(r=>r.some(c=>String(c).trim()==="ID")&&r.some(c=>/action item/i.test(String(c))));
+      if(hi<0){alert("Could not find the header row with ID and Action item in this file.");return}
+      const hd=rows[hi].map(c=>String(c).trim().toLowerCase()),col=re=>hd.findIndex(h=>re.test(h));
+      const C={id:col(/^id$/),owner:col(/^owner/),support:col(/^supporting/),action:col(/^action item/),first:col(/^first raised/),last:col(/^last raised/),
+        times:col(/^meetings raised/),latest:col(/^latest status/),due:col(/^(due|target) date/),status:col(/^status$/),ev:col(/^evidence/),rm:col(/^remarks/),off:col(/^responsible officer/)};
+      let add=0,skip=0;const by=LS.get("hod_editor_name")||"";
+      for(const r of rows.slice(hi+1)){
+        const id=String(r[C.id]||"").trim();if(!/^A-\d+/.test(id)||!String(r[C.action]||"").trim())continue;
+        const ref=doc(fs,COL,id);if((await getDoc(ref)).exists()){skip++;continue}
+        const g=k=>C[k]>=0?r[C[k]]:"";const st0=String(g("status")).trim(),st=["Open","In progress","Done","Dropped"].includes(st0)?st0:"Open";
+        const last=toISO(g("last"))||toISO(g("first")),lt=String(g("latest")||"").trim();
+        await setDoc(ref,{id,owner:String(g("owner")).trim(),support:String(g("support")||"").trim(),officer:String(g("off")||"").trim(),action:String(g("action")).trim(),
+          first:toISO(g("first")),last,times:parseInt(g("times"),10)||1,due:toISO(g("due")),status:st,evidence:String(g("ev")||"").trim(),remarks:String(g("rm")||"").trim(),
+          history:[{d:last,t:lt||"Raised in HOD meeting.",s:"",src:"minutes"}],updatedAt:new Date().toISOString(),updatedBy:by});add++;
+      }
+      alert(`Imported ${add} action item${add===1?"":"s"}${skip?`, skipped ${skip} already in the tracker`:""}.`);
+    }catch(e){alert("Import failed: "+(e.message||e))}
+  };rd.readAsArrayBuffer(f);
+}
+if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",addHeaderControls);else addHeaderControls();
+</script>
+</head>
+<body>
+<title>HOD Action Tracker</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=Noto+Sans:wght@400;500;600;700&family=Noto+Sans+Tamil:wght@400;600&family=Noto+Serif:wght@600;700&display=swap">
+<style>
+/* Layout: a file register. Header band, tab strip, summary tally, filter bar, then a ruled list of numbered files; a side drawer opens a file. */
+:root{
+  --bg:#f3f4f2; --paper:#ffffff; --ink:#1d2733; --muted:#5d6875; --line:#d9ddd8; --soft:#e9ece8;
+  --accent:#1f5a7a; --accent-ink:#ffffff; --accent-soft:#e1ecf2;
+  --chronic:#b3261e; --chronic-soft:#fbe5e2;
+  --silent:#9a6200; --silent-soft:#fbefd6;
+  --overdue:#7a2e8f; --overdue-soft:#f2e3f6;
+  --prog:#1f5a7a; --prog-soft:#e1ecf2;
+  --done:#2c7a3f; --done-soft:#e1f2e4;
+  --shadow:0 10px 40px rgba(20,30,40,.18);
+  --f-display:"Noto Serif",Georgia,serif;
+  --f-body:"Noto Sans","Noto Sans Tamil",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#141a20; --paper:#1c242c; --ink:#e6eaee; --muted:#9aa5b1; --line:#2f3a45; --soft:#232d36;
+  --accent:#7cb8d8; --accent-ink:#0f1a22; --accent-soft:#1f3442;
+  --chronic:#f2958c; --chronic-soft:#3d2120; --silent:#e8b85c; --silent-soft:#3a2e15;
+  --overdue:#d6a1e6; --overdue-soft:#35233b; --prog:#7cb8d8; --prog-soft:#1f3442; --done:#86cf98; --done-soft:#1d3523;
+  --shadow:0 10px 40px rgba(0,0,0,.5); color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#141a20; --paper:#1c242c; --ink:#e6eaee; --muted:#9aa5b1; --line:#2f3a45; --soft:#232d36;
+  --accent:#7cb8d8; --accent-ink:#0f1a22; --accent-soft:#1f3442;
+  --chronic:#f2958c; --chronic-soft:#3d2120; --silent:#e8b85c; --silent-soft:#3a2e15;
+  --overdue:#d6a1e6; --overdue-soft:#35233b; --prog:#7cb8d8; --prog-soft:#1f3442; --done:#86cf98; --done-soft:#1d3523;
+  --shadow:0 10px 40px rgba(0,0,0,.5); color-scheme:dark}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:14px;line-height:1.45}
+.wrap{max-width:1180px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+header.top{background:var(--paper);border-bottom:1px solid var(--line)}
+header.top .wrap{padding-block:18px 14px;display:flex;flex-wrap:wrap;gap:12px 24px;align-items:flex-end;justify-content:space-between}
+.eyebrow{font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600}
+h1{font-family:var(--f-display);font-size:26px;margin:2px 0 0;line-height:1.15;text-wrap:balance}
+.head-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+label.asof{display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--muted)}
+input,select,textarea,button{font:inherit;color:inherit}
+input[type=text],input[type=date],input[type=search],select,textarea{background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:7px 9px;min-width:0}
+textarea{width:100%;resize:vertical}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn{border:1px solid var(--line);background:var(--paper);border-radius:6px;padding:7px 12px;cursor:pointer;font-weight:500;white-space:nowrap}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--accent);padding-inline:6px}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+nav.tabs{display:flex;gap:4px;margin-top:2px;overflow-x:auto;scrollbar-width:none}
+nav.tabs button{white-space:nowrap;flex:none;border:0;background:none;padding:10px 12px;border-bottom:3px solid transparent;cursor:pointer;font-weight:600;color:var(--muted)}
+nav.tabs button[aria-selected=true]{color:var(--ink);border-bottom-color:var(--accent)}
+main{padding-block:18px 60px}
+.tally{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-bottom:14px}
+.tally button{text-align:left;background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:10px 12px;cursor:pointer;display:flex;flex-direction:column;gap:2px}
+.tally button[aria-pressed=true]{border-color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink)}
+.tally .n{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.1}
+.tally .l{font-size:12px;color:var(--muted)}
+.tally .chronic .n{color:var(--chronic)} .tally .silent .n{color:var(--silent)} .tally .overdue .n{color:var(--overdue)} .tally .prog .n{color:var(--prog)} .tally .done .n{color:var(--done)}
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+.filters input[type=search]{flex:1 1 220px}
+.filters select{flex:0 1 220px}
+.count{color:var(--muted);font-size:12.5px;margin-left:auto}
+.list{background:var(--paper);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.row{display:grid;grid-template-columns:64px minmax(0,1fr) 112px 118px 92px 52px;gap:12px;align-items:start;padding:11px 14px;border-top:1px solid var(--line);cursor:pointer;background:none;border-left:0;border-right:0;border-bottom:0;width:100%;text-align:left}
+.row:first-child{border-top:0}
+.row:hover{background:var(--soft)}
+.row.hdr{cursor:default;background:var(--soft);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;padding-block:8px}
+.id{font-family:var(--f-mono);font-size:12.5px;color:var(--muted);padding-top:1px}
+.act{font-weight:600}
+.own{font-size:12.5px;color:var(--muted);margin-top:2px}
+.latest{font-size:12.5px;color:var(--muted);margin-top:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.num{font-variant-numeric:tabular-nums;font-size:13px}
+.pill{display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:2px 9px;font-size:12px;font-weight:600;white-space:nowrap}
+.pill::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.p-open{background:var(--soft);color:var(--muted)}
+.p-prog{background:var(--prog-soft);color:var(--prog)}
+.p-done{background:var(--done-soft);color:var(--done)}
+.p-dropped{background:var(--soft);color:var(--muted);text-decoration:line-through}
+.f-chronic{background:var(--chronic-soft);color:var(--chronic)}
+.f-silent{background:var(--silent-soft);color:var(--silent)}
+.f-overdue{background:var(--overdue-soft);color:var(--overdue)}
+.f-open{background:transparent;color:var(--muted);padding-left:0}
+.f-open::before{display:none}
+.f-closed{background:var(--done-soft);color:var(--done)}
+.due-late{color:var(--overdue);font-weight:600}
+.empty{padding:40px 20px;text-align:center;color:var(--muted)}
+.notice{background:var(--silent-soft);color:var(--ink);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px}
+.notice[hidden]{display:none}
+/* drawer */
+.scrim{position:fixed;inset:0;background:rgba(10,15,20,.38);z-index:20}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(560px,100%);background:var(--paper);z-index:21;box-shadow:var(--shadow);display:flex;flex-direction:column;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);padding-right:env(safe-area-inset-right,0px)}
+.drawer header{display:flex;align-items:flex-start;gap:10px;padding:16px 18px 12px;border-bottom:1px solid var(--line)}
+.drawer header h2{font-family:var(--f-display);font-size:19px;margin:2px 0 0;line-height:1.25;text-wrap:balance}
+.drawer .body{overflow:auto;padding:16px 18px 24px;display:flex;flex-direction:column;gap:14px;flex:1}
+.drawer footer{border-top:1px solid var(--line);padding:12px 18px;display:flex;gap:8px;justify-content:flex-end;align-items:center}
+.drawer footer .msg{margin-right:auto;font-size:12.5px;color:var(--muted)}
+.field{display:flex;flex-direction:column;gap:4px}
+.field>span{font-size:12px;font-weight:600;color:var(--muted)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;background:var(--soft);border-radius:8px;padding:10px 12px}
+.facts div{display:flex;flex-direction:column;font-size:12px;color:var(--muted)}
+.facts b{font-size:14px;color:var(--ink);font-variant-numeric:tabular-nums}
+.hist{border-left:2px solid var(--line);margin:0;padding:0 0 0 14px;list-style:none;display:flex;flex-direction:column;gap:10px}
+.hist li{position:relative;font-size:13px}
+.hist li::before{content:"";position:absolute;left:-19px;top:5px;width:8px;height:8px;border-radius:50%;background:var(--accent)}
+.hist .when{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+h3{font-size:12px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin:6px 0 0}
+/* follow-up */
+.fu{display:grid;grid-template-columns:300px minmax(0,1fr);gap:16px;align-items:start}
+.deps{background:var(--paper);border:1px solid var(--line);border-radius:8px;max-height:70vh;overflow:auto}
+.deps button{display:flex;justify-content:space-between;gap:8px;width:100%;text-align:left;border:0;border-top:1px solid var(--line);background:none;padding:9px 12px;cursor:pointer}
+.deps button:first-child{border-top:0}
+.deps button[aria-current=true]{background:var(--accent-soft);font-weight:600}
+.deps .c{font-variant-numeric:tabular-nums;color:var(--muted);display:flex;gap:6px}
+.deps .c .r{color:var(--chronic);font-weight:600}
+.preview{background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.preview textarea{min-height:360px;font-size:13.5px;line-height:1.5;font-family:var(--f-body)}
+.opts{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;font-size:13px}
+.opts label{display:flex;gap:6px;align-items:center}
+.bar{display:flex;flex-wrap:wrap;gap:10px 20px;justify-content:space-between;align-items:flex-end;margin-bottom:14px}
+.bar p{margin:2px 0 0;max-width:70ch}
+h2.sec{font-family:var(--f-display);font-size:19px;margin:0}
+.ag{background:var(--paper);border:1px solid var(--line);border-radius:8px;margin-bottom:12px;overflow:hidden}
+.ag>header{display:flex;justify-content:space-between;gap:10px;align-items:baseline;padding:10px 14px;background:var(--soft);font-weight:700}
+.ag>header .ro{font-weight:400}
+.ag-row{display:grid;grid-template-columns:28px 60px minmax(0,1fr) auto;gap:10px;padding:10px 14px;border-top:1px solid var(--line);align-items:start}
+.ag-row.done{opacity:.55}
+.ag-row .t{font-weight:600}
+.ag-row .flags{display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;align-items:center}
+.ag-row .acts{display:flex;gap:6px;justify-content:flex-end;margin-top:8px;flex-wrap:wrap}
+.ag-row .acts .btn{padding:4px 10px;font-size:12.5px}
+.ag-row.sel{background:var(--accent-soft)}
+.closer{grid-column:3 / -1;display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:var(--soft);border-radius:6px;padding:8px}
+.closer input{flex:1 1 220px}
+.selbar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--paper);border:1px solid var(--accent);border-radius:8px;padding:10px 12px;margin-bottom:12px;box-shadow:var(--shadow)}
+.selbar input{flex:1 1 220px}
+.ag-row input{margin-top:3px}
+.imp{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:16px;align-items:start}
+.cand{background:var(--paper);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.cand>header{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px 14px;background:var(--soft);flex-wrap:wrap}
+.cand-row{display:grid;grid-template-columns:24px minmax(0,1fr);gap:10px;padding:12px 14px;border-top:1px solid var(--line)}
+.cand-row .fields{display:flex;flex-direction:column;gap:6px;min-width:0}
+.cand-row .top{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.cand-row input[type=text],.cand-row textarea{width:100%}
+.kind-new{background:var(--accent-soft);color:var(--accent)}
+.kind-upd{background:var(--soft);color:var(--ink)}
+.rag{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;border-radius:4px;font-size:11px;font-weight:700;padding:0 5px;color:#fff}
+.rag-R{background:var(--chronic)} .rag-A{background:var(--silent)} .rag-G{background:var(--done)} .rag-C{background:var(--muted)}
+:root[data-theme="dark"] .rag{color:#111} @media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .rag{color:#111}}
+.row.s-R{box-shadow:inset 4px 0 0 var(--chronic)} .row.s-A{box-shadow:inset 4px 0 0 var(--silent)} .row.s-G{box-shadow:inset 4px 0 0 var(--done)}
+.esc{font-size:11.5px;color:var(--muted);margin-top:4px;display:block}
+.esc.l3{color:var(--chronic);font-weight:600}
+.kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-bottom:14px}
+.kpi{background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:12px}
+.kpi .n{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.1}
+.kpi .l{font-size:12px;color:var(--muted)} .kpi .s{font-size:11.5px;color:var(--muted);margin-top:4px}
+.score-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.panel{background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:14px;min-width:0}
+.panel h3{margin:0 0 10px}
+.hbar{display:grid;grid-template-columns:110px minmax(0,1fr) 40px;gap:10px;align-items:center;padding:5px 0;border-radius:4px}
+.hbar:hover{background:var(--soft)}
+.hbar .track{height:18px;position:relative}
+.hbar .fill{height:100%;background:var(--accent);border-radius:0 4px 4px 0;min-width:2px}
+.hbar .v{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+.stack{display:flex;gap:2px;height:22px;border-radius:4px;overflow:hidden}
+.stack span{display:block;height:100%}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:12.5px;color:var(--muted)}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.tbl{overflow-x:auto}
+.tbl table{border-collapse:collapse;width:100%;min-width:640px;font-size:13px}
+.tbl th{text-align:left;font-size:11.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--line)}
+.tbl td{padding:7px 8px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+.tbl tr[data-d]{cursor:pointer} .tbl tr[data-d]:hover td{background:var(--soft)}
+.tbl td.num,.tbl th.num{text-align:right}
+.mini{display:flex;gap:2px;height:10px;width:120px;border-radius:3px;overflow:hidden;background:var(--soft)}
+.mini span{height:100%}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:8px;z-index:40;font-size:13px}
+.ro{font-size:12.5px;color:var(--muted)}
+@media (max-width:860px){
+  .tally{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .row{grid-template-columns:56px minmax(0,1fr);gap:4px 10px}
+  .row.hdr{display:none}
+  .row .c-status,.row .c-flag,.row .c-due,.row .c-wk{grid-column:2}
+  .row .c-meta{grid-column:2;display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:4px}
+  .fu,.imp,.score-grid{grid-template-columns:1fr}
+  .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .ag-row{grid-template-columns:24px 52px minmax(0,1fr)}
+  .ag-row .side{grid-column:3} .ag-row .flags,.ag-row .acts{justify-content:flex-start}
+  .deps{max-height:240px}
+}
+@media (min-width:861px){.row .c-meta{display:contents}}
+@media (max-width:480px){.grid2,.facts{grid-template-columns:1fr 1fr}.tally .n{font-size:20px}}
+@media (prefers-reduced-motion:no-preference){.drawer{animation:slide .18s ease-out}@keyframes slide{from{transform:translateX(24px);opacity:.6}}}
+</style>
+
+<header class="top"><div class="wrap">
+  <div>
+    <div class="eyebrow">Mayiladuthurai Collectorate · Monday HOD Review Meeting</div>
+    <h1>HOD Action Tracker</h1>
+  </div>
+  <div class="head-actions">
+    <label class="asof" for="asof">As of <input type="date" id="asof"></label>
+    <button class="btn" id="exportBtn" type="button" hidden>Export to Excel (CSV)</button>
+    <button class="btn primary" id="newBtn" type="button">New action</button>
+  </div>
+</div>
+<div class="wrap"><nav class="tabs" role="tablist">
+  <button role="tab" id="tab-items" aria-selected="true" type="button">Action items</button>
+  <button role="tab" id="tab-score" aria-selected="false" type="button">Scorecard</button>
+  <button role="tab" id="tab-agenda" aria-selected="false" type="button">Meeting agenda</button>
+  <button role="tab" id="tab-fu" aria-selected="false" type="button">Follow-up messages</button>
+  <button role="tab" id="tab-import" aria-selected="false" type="button">Import minutes</button>
+</nav></div>
+</header>
+
+<main class="wrap">
+  <div class="notice" id="notice" hidden></div>
+
+  <section id="view-items">
+    <div class="tally" id="tally"></div>
+    <div class="filters">
+      <input type="search" id="q" placeholder="Search action, department, ID or latest status">
+      <select id="dep" aria-label="Department"><option value="">All departments</option></select>
+      <select id="st" aria-label="Status">
+        <option value="active">Open and in progress</option>
+        <option value="">Any status</option>
+        <option>Open</option><option>In progress</option><option>Done</option><option>Dropped</option>
+      </select>
+      <select id="ragSel" aria-label="RAG"><option value="">Any RAG</option><option value="R">Red</option><option value="A">Amber</option><option value="G">Green</option></select>
+    </div>
+    <div class="filters">
+      <select id="flagSel" aria-label="Flag"><option value="">Any flag</option><option>Chronic</option><option value="Silent - confirm">Silent, confirm</option><option value="Open">Not flagged</option></select>
+      <select id="escSel" aria-label="Escalation"><option value="">Any escalation</option><option value="1">L1 · HOD</option><option value="2">L2 · DRO / PA (G)</option><option value="3">L3 · Collector</option><option value="23">L2 and L3</option></select>
+      <select id="dueSel" aria-label="Target date"><option value="">Any target date</option><option value="overdue">Overdue</option><option value="7">Due in 7 days</option><option value="30">Due in 30 days</option><option value="none">No target date</option><option value="has">Has target date</option></select>
+      <select id="ageSel" aria-label="Age"><option value="">Any age</option><option value="0-4">0–4 weeks</option><option value="4-8">4–8 weeks</option><option value="8-12">8–12 weeks</option><option value="12-999">12+ weeks</option></select>
+      <select id="sortSel" aria-label="Sort"><option value="">Sort: priority</option><option value="age">Sort: oldest first</option><option value="due">Sort: target date</option><option value="times">Sort: most meetings</option><option value="quiet">Sort: longest without update</option><option value="id">Sort: Action ID</option></select>
+      <button class="btn ghost" id="clearF" type="button">Clear filters</button>
+      <span class="count" id="count"></span>
+    </div>
+    <div class="list" id="list"><div class="empty">Loading action items from the tracker…</div></div>
+  </section>
+
+  <section id="view-score" hidden>
+    <div class="bar"><div><h2 class="sec">Department scorecard</h2><p class="ro">Weekly review pack. RAG: <b>Red</b> = overdue or raised in 4+ meetings. <b>Amber</b> = no target date, due within 7 days, or no update for 14 days. <b>Green</b> = has a target date and is on track.</p></div></div>
+    <div class="kpis" id="kpis"></div>
+    <div class="score-grid">
+      <div class="panel"><h3>Open items by age</h3><div id="ageing"></div></div>
+      <div class="panel"><h3>RAG mix of open items</h3><div id="ragmix"></div></div>
+    </div>
+    <div class="panel" style="margin-top:14px"><h3>Department league table</h3><p class="ro" style="margin:2px 0 10px">Click a department to see its items.</p>
+      <div class="filters"><input type="search" id="lgQ" placeholder="Find a department" style="flex:0 1 240px">
+        <select id="lgSort" aria-label="Sort league"><option value="red">Sort: most Red</option><option value="open">Sort: most open</option><option value="oldest">Sort: oldest item</option><option value="l3">Sort: most with Collector</option><option value="name">Sort: name</option></select>
+        <label class="opts" for="lgRed"><input type="checkbox" id="lgRed"> Only departments with Red items</label>
+        <label class="opts" for="lgL3"><input type="checkbox" id="lgL3"> Only with items at Collector level</label></div><div class="tbl" id="league"></div></div>
+  </section>
+
+  <section id="view-agenda" hidden>
+    <div class="bar">
+      <div><h2 class="sec">Pending from previous meetings</h2><p class="ro">Department-wise list for section A of the minutes, worst first. Use <b>Done</b> or <b>Drop</b> on a row to close it in one step, or tick several rows and close them together.</p></div>
+      <div class="opts">
+        <select id="agDep" aria-label="Department"><option value="">All departments</option></select>
+        <select id="agRag" aria-label="RAG"><option value="">Any RAG</option><option value="R">Red only</option><option value="A">Amber only</option><option value="G">Green only</option></select>
+        <select id="agEsc" aria-label="Escalation"><option value="">Any escalation</option><option value="23">L2 and L3</option><option value="3">L3 · Collector only</option></select>
+        <label for="agOnly"><input type="checkbox" id="agOnly" checked> Only Chronic, Silent and Overdue</label>
+        <button class="btn primary" id="copyAgenda" type="button">Copy agenda text</button>
+      </div>
+    </div>
+    <div class="selbar" id="selbar" hidden>
+      <b id="selN"></b>
+      <input type="text" id="selEv" placeholder="ATR / evidence reference for all selected">
+      <button class="btn" id="selMeet" type="button">Closed in meeting</button>
+      <button class="btn" id="selRev" type="button">Mark reviewed</button>
+      <button class="btn primary" id="selDone" type="button">Close as Done</button>
+      <button class="btn" id="selDrop" type="button">Drop</button>
+      <button class="btn ghost" id="selClear" type="button">Clear selection</button>
+    </div>
+    <div id="agenda"></div>
+  </section>
+
+  <section id="view-import" hidden>
+    <div class="bar"><div><h2 class="sec">Import actions from this week's minutes</h2><p class="ro">Upload the minutes (.docx) or paste the text. Claude picks out each instruction, matches it to an existing Action ID where it is a repeat, and you approve before anything is saved.</p></div></div>
+    <div class="imp">
+      <div class="preview">
+        <div class="grid2">
+          <label class="field" for="impDate"><span>Meeting date</span><input type="date" id="impDate"></label>
+          <label class="field" for="impFile"><span>Minutes file (.docx or .txt)</span><input type="file" id="impFile" accept=".docx,.txt"></label>
+        </div>
+        <label class="field" for="impText"><span>Minutes text</span><textarea id="impText" rows="12" placeholder="Paste the minutes here, e.g.&#10;JD Health: Instructed to complete pending ANC registrations by 10.11.2026.&#10;PWD: Demolition of 15 high school buildings to be completed this week."></textarea></label>
+        <div class="opts"><button class="btn primary" id="impRun" type="button">Find action items</button><span class="ro" id="impMsg"></span></div>
+      </div>
+      <div id="impOut"></div>
+    </div>
+  </section>
+
+  <section id="view-fu" hidden>
+    <div class="fu">
+      <div style="display:flex;flex-direction:column;gap:8px;min-width:0">
+        <input type="search" id="fuQ" placeholder="Find a department">
+        <select id="fuScope" aria-label="Which items"><option value="">All open items</option><option value="R">Red items only</option><option value="esc">Escalated (L2 and L3) only</option><option value="date">Overdue or no target date</option><option value="quiet">No update for 14 days</option></select>
+        <div class="deps" id="deps"></div>
+      </div>
+      <div class="preview">
+        <div class="opts">
+          <label for="incSupport"><input type="checkbox" id="incSupport" checked> Include items where they support</label>
+          <label for="incTamil"><input type="checkbox" id="incTamil" checked> Add Tamil request line</label>
+        </div>
+        <label class="field" for="sig"><span>Signed by</span><input type="text" id="sig" value="PA (G), Collectorate, Mayiladuthurai"></label>
+        <textarea id="msg" aria-label="Message text"></textarea>
+        <div class="opts">
+          <button class="btn primary" id="copyMsg" type="button">Copy message</button>
+          <a class="btn" id="waLink" href="#" target="_blank" rel="noopener">Open in WhatsApp</a>
+          <span class="ro" id="msgNote"></span>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" hidden aria-modal="true" role="dialog" aria-labelledby="dTitle">
+  <header>
+    <div style="flex:1;min-width:0">
+      <div class="eyebrow" id="dEyebrow"></div>
+      <h2 id="dTitle"></h2>
+    </div>
+    <button class="btn ghost" id="dClose" type="button" aria-label="Close">Close</button>
+  </header>
+  <div class="body" id="dBody"></div>
+  <footer><span class="msg" id="dMsg"></span><button class="btn" id="dCancel" type="button">Cancel</button><button class="btn primary" id="dSave" type="button">Save</button></footer>
+</aside>
+<div class="toast" id="toast" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<script>
+(function(){
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const STATUSES=["Open","In progress","Done","Dropped"];
+const todayISO=()=>{const d=new Date();return new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10)};
+const dmy=iso=>iso?iso.slice(8,10)+"."+iso.slice(5,7)+"."+iso.slice(0,4):"";
+const days=(a,b)=>Math.round((Date.parse(a)-Date.parse(b))/864e5);
+const splitDeps=s=>String(s||"").split(/\s*\/\s*/).map(x=>x.trim()).filter(Boolean);
+const store=(k,v)=>{try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}};
+
+let items=[], db=null, user=null, canWrite=true, me=null, loaded=false;
+const state={tally:"",q:"",dep:"",rag:"",flag:"",esc:"",due:"",age:"",sort:"",st:"active",fuDep:"",asof:todayISO(),tab:"items"};
+$("#asof").value=state.asof;
+const savedSig=store("hod.sig"); if(savedSig) $("#sig").value=savedSig;
+
+function flagOf(it){
+  if(it.status==="Done") return "Closed";
+  if(it.status==="Dropped") return "Dropped";
+  if(it.last && days(state.asof,it.last)>14) return "Silent - confirm";
+  if((it.times||0)>=4) return "Chronic";
+  return "Open";
+}
+const overdue=it=>it.due && it.status!=="Done" && it.status!=="Dropped" && it.due<state.asof;
+const weeks=it=>it.first?Math.max(0,Math.floor(days(state.asof,it.first)/7)):"";
+const active=it=>it.status==="Open"||it.status==="In progress";
+const latestOf=it=>{const h=it.history||[];return h.length?h[h.length-1]:null};
+const lastTouch=it=>{const l=latestOf(it);return [it.last,l&&l.d].filter(Boolean).sort().pop()||it.first};
+function ragOf(it){
+  if(!active(it)) return "C";
+  if(overdue(it)||(it.times||0)>=4) return "R";
+  if(!it.due||days(it.due,state.asof)<=7||days(state.asof,lastTouch(it))>14) return "A";
+  return "G";
+}
+const RAGNAME={R:"Red",A:"Amber",G:"Green",C:"Closed"};
+const ragPill=it=>{const r=ragOf(it);return `<span class="rag rag-${r}" title="${RAGNAME[r]}">${r==="C"?"✓":r}</span>`};
+function escOf(it){
+  if(!active(it)) return null;
+  const r=ragOf(it);
+  if(r==="R"&&((it.times||0)>=8||(overdue(it)&&days(state.asof,it.due)>14))) return {lvl:3,who:"Collector"};
+  if(r==="R") return {lvl:2,who:"DRO / PA (G)"};
+  return {lvl:1,who:"HOD"};
+}
+const escTag=it=>{const e=escOf(it);return e?`<span class="esc ${e.lvl===3?"l3":""}">L${e.lvl} · ${e.who}</span>`:""};
+
+function flagPill(it){
+  const f=flagOf(it);
+  const cls={"Chronic":"f-chronic","Silent - confirm":"f-silent","Open":"f-open","Closed":"f-closed","Dropped":"p-dropped"}[f];
+  let h=`<span class="pill ${cls}">${f==="Silent - confirm"?"Silent, confirm":esc(f)}</span>`;
+  if(overdue(it)) h+=` <span class="pill f-overdue">Overdue</span>`;
+  return h;
+}
+function statusPill(s){
+  const cls={"Open":"p-open","In progress":"p-prog","Done":"p-done","Dropped":"p-dropped"}[s]||"p-open";
+  return `<span class="pill ${cls}">${esc(s)}</span>`;
+}
+
+const TALLY=[
+  ["","All open",it=>active(it),""],
+  ["chronic","Chronic",it=>active(it)&&flagOf(it)==="Chronic","chronic"],
+  ["silent","Silent, confirm",it=>active(it)&&flagOf(it)==="Silent - confirm","silent"],
+  ["overdue","Overdue",it=>overdue(it),"overdue"],
+  ["prog","In progress",it=>it.status==="In progress","prog"],
+  ["closed","Done or dropped",it=>!active(it),"done"],
+];
+
+function depMatch(it,dep){return !dep||splitDeps(it.owner).includes(dep)||splitDeps(it.support).includes(dep)}
+function filtered(){
+  const t=TALLY.find(x=>x[0]===state.tally);
+  const q=state.q.toLowerCase();
+  return items.filter(it=>{
+    if(state.tally){ if(!t[2](it)) return false; }
+    else if(state.st==="active"){ if(!active(it)) return false; }
+    else if(state.st && it.status!==state.st) return false;
+    if(!depMatch(it,state.dep)) return false;
+    if(state.rag && ragOf(it)!==state.rag) return false;
+    if(state.flag && flagOf(it)!==state.flag) return false;
+    if(state.esc){const e=escOf(it);if(!e||!state.esc.includes(String(e.lvl))) return false;}
+    if(state.due){
+      if(state.due==="overdue"&&!overdue(it)) return false;
+      if(state.due==="none"&&it.due) return false;
+      if(state.due==="has"&&!it.due) return false;
+      if((state.due==="7"||state.due==="30")&&!(it.due&&active(it)&&days(it.due,state.asof)>=0&&days(it.due,state.asof)<=+state.due)) return false;
+    }
+    if(state.age){const [a,b]=state.age.split("-").map(Number),w=+weeks(it)||0;if(w<a||w>=b) return false;}
+    if(q){const l=latestOf(it);const hay=[it.id,it.owner,it.officer,it.support,it.action,l&&l.t,it.remarks].join(" ").toLowerCase(); if(!hay.includes(q)) return false;}
+    return true;
+  }).sort((a,b)=>{
+    const rank=it=>({"R":0,"A":1,"G":2,"C":3}[ragOf(it)]*10+{"Chronic":0,"Silent - confirm":1,"Open":2,"Closed":3,"Dropped":4}[flagOf(it)]);
+    const byId=a.id.localeCompare(b.id);
+    switch(state.sort){
+      case "age": return (a.first||"").localeCompare(b.first||"")||byId;
+      case "due": return (a.due||"9999").localeCompare(b.due||"9999")||byId;
+      case "times": return (b.times||0)-(a.times||0)||byId;
+      case "quiet": return lastTouch(a).localeCompare(lastTouch(b))||byId;
+      case "id": return byId;
+      default: return (overdue(b)-overdue(a))||(rank(a)-rank(b))||byId;
+    }
+  });
+}
+
+function renderTally(){
+  $("#tally").innerHTML=TALLY.map(([k,l,fn,c])=>`<button type="button" class="${c}" data-t="${k}" aria-pressed="${state.tally===k&&(k!==""||state.st==="active")}"><span class="n">${loaded?items.filter(fn).length:"–"}</span><span class="l">${l}</span></button>`).join("");
+}
+function allDeps(){
+  const m=new Map();
+  for(const it of items){
+    for(const d of splitDeps(it.owner)){const e=m.get(d)||{own:0,sup:0,chronic:0};if(active(it)){e.own++;if(flagOf(it)==="Chronic")e.chronic++}m.set(d,e)}
+    for(const d of splitDeps(it.support)){const e=m.get(d)||{own:0,sup:0,chronic:0};if(active(it))e.sup++;m.set(d,e)}
+  }
+  return [...m.entries()].sort((a,b)=>a[0].localeCompare(b[0]));
+}
+function renderDepSelect(){
+  const sel=$("#dep"),cur=state.dep;
+  sel.innerHTML=`<option value="">All departments</option>`+allDeps().map(([d])=>`<option ${d===cur?"selected":""}>${esc(d)}</option>`).join("");
+  const ag=$("#agDep"),ac=ag.value;
+  ag.innerHTML=`<option value="">All departments</option>`+allDeps().map(([d])=>`<option ${d===ac?"selected":""}>${esc(d)}</option>`).join("");
+}
+function renderList(){
+  const rows=filtered();
+  $("#count").textContent=loaded?`${rows.length} of ${items.length} items`:"";
+  if(!loaded){return}
+  if(!items.length){$("#list").innerHTML=`<div class="empty">No action items yet. Use <b>New action</b> to record the first instruction from a meeting.</div>`;return}
+  if(!rows.length){$("#list").innerHTML=`<div class="empty">No items match these filters.</div>`;return}
+  $("#list").innerHTML=`<div class="row hdr"><span>ID</span><span>Action item and owner</span><span>Status</span><span>RAG / flag</span><span>Target</span><span>Wks</span></div>`+
+  rows.map(it=>{const l=latestOf(it);return `<button type="button" class="row s-${ragOf(it)}" data-id="${esc(it.id)}">
+    <span class="id">${esc(it.id)}</span>
+    <span style="min-width:0"><div class="act">${esc(it.action)}</div><div class="own">${esc(it.owner)}${it.officer?` (${esc(it.officer)})`:""}${it.support?` · with ${esc(it.support)}`:""}</div>${l?`<div class="latest">${esc(l.t)}</div>`:""}</span>
+    <span class="c-meta"><span class="c-status">${statusPill(it.status)}${escTag(it)}</span>
+    <span class="c-flag">${ragPill(it)} ${flagPill(it)}</span>
+    <span class="c-due num ${overdue(it)?"due-late":""}">${it.due?dmy(it.due):'<span class="ro">No date</span>'}</span>
+    <span class="c-wk num ro">${weeks(it)}${window.innerWidth<=860?" wks open":""}</span></span>
+  </button>`}).join("");
+}
+
+/* ---------- follow-up ---------- */
+function fuScope(it){
+  const s=$("#fuScope").value;if(!active(it))return false;
+  if(s==="R")return ragOf(it)==="R";
+  if(s==="esc")return ((escOf(it)||{}).lvl||0)>=2;
+  if(s==="date")return overdue(it)||!it.due;
+  if(s==="quiet")return days(state.asof,lastTouch(it))>14;
+  return true;
+}
+function renderDeps(){
+  const fq=$("#fuQ").value.trim().toLowerCase();
+  const deps=allDeps().map(([d])=>{const own=items.filter(it=>fuScope(it)&&splitDeps(it.owner).includes(d));const sup=items.filter(it=>fuScope(it)&&!splitDeps(it.owner).includes(d)&&splitDeps(it.support).includes(d));
+    return [d,{own:own.length,sup:sup.length,chronic:own.filter(it=>flagOf(it)==="Chronic").length}]}).filter(([d,e])=>e.own+e.sup>0&&(!fq||d.toLowerCase().includes(fq)));
+  if(deps.length&&!deps.some(([d])=>d===state.fuDep)) state.fuDep=deps[0][0];
+  if(!state.fuDep&&deps.length) state.fuDep=deps[0][0];
+  $("#deps").innerHTML=deps.length?deps.map(([d,e])=>`<button type="button" data-d="${esc(d)}" aria-current="${d===state.fuDep}"><span>${esc(d)}</span><span class="c">${e.chronic?`<span class="r" title="Chronic">${e.chronic}C</span>`:""}<span>${e.own}${e.sup?"+"+e.sup:""}</span></span></button>`).join(""):`<div class="empty">No open items.</div>`;
+  buildMsg();
+}
+function buildMsg(){
+  const d=state.fuDep; if(!d){$("#msg").value="";return}
+  const own=items.filter(it=>fuScope(it)&&splitDeps(it.owner).includes(d));
+  const sup=$("#incSupport").checked?items.filter(it=>fuScope(it)&&!splitDeps(it.owner).includes(d)&&splitDeps(it.support).includes(d)):[];
+  const line=(it,i)=>{const l=latestOf(it);const bits=[`Status: ${it.status}`];if(it.due)bits.push(`Due: ${dmy(it.due)}${overdue(it)?" (overdue)":""}`);
+    const f=flagOf(it);if(f==="Chronic")bits.push(`raised in ${it.times} meetings since ${dmy(it.first)}`);if(f==="Silent - confirm")bits.push("please confirm if completed");
+    return `${i+1}. *${it.id}* ${it.action}\n   ${bits.join(" · ")}${l?`\n   Last noted: ${l.t}`:""}`};
+  let t=`*HOD Review Meeting: pending action items*\n*To:* ${d}\nAs of ${dmy(state.asof)}\n\n`;
+  t+=own.length?own.map(line).join("\n\n"):"No items pending as owner.";
+  if(sup.length) t+=`\n\n*Items where your support is needed:*\n`+sup.map(line).join("\n\n");
+  t+=`\n\nKindly send the ATR with photos for each item to PRO before the next HOD meeting.`;
+  if($("#incTamil").checked) t+=`\nஒவ்வொரு பணிக்கும் நடவடிக்கை அறிக்கையை (ATR) புகைப்படங்களுடன் அடுத்த கூட்டத்திற்கு முன் அனுப்பவும்.`;
+  t+=`\n\n${$("#sig").value.trim()}`;
+  $("#msg").value=t;
+  $("#waLink").href="https://wa.me/?text="+encodeURIComponent(t);
+  $("#msgNote").textContent=`${own.length} as owner${sup.length?`, ${sup.length} supporting`:""}`;
+}
+
+/* ---------- drawer ---------- */
+let editing=null, saving=false;
+function openDrawer(it){
+  editing=it?{...it}:null;
+  const isNew=!it;
+  $("#dEyebrow").textContent=isNew?"New action item":`${it.id} · ${it.owner}`;
+  $("#dTitle").textContent=isNew?"Record an instruction from the meeting":it.action;
+  const dis=canWrite?"":"disabled";
+  let h="";
+  if(isNew){
+    h+=`<label class="field" for="fAction"><span>Action item</span><textarea id="fAction" rows="3" placeholder="e.g. Complete pending e-KYC in top 25 ration shops"></textarea></label>
+    <div class="grid2"><label class="field" for="fOwner"><span>Owner department</span><input type="text" id="fOwner" list="depList" placeholder="e.g. JR Cooperative"></label>
+    <label class="field" for="fSupport"><span>Supporting department</span><input type="text" id="fSupport" list="depList" placeholder="Optional"></label></div>
+    <div class="grid2"><label class="field" for="fFirst"><span>Meeting date</span><input type="date" id="fFirst" value="${state.asof}"></label>
+    <label class="field" for="fDue"><span>Target date (required)</span><input type="date" id="fDue"></label></div>
+    <label class="field" for="fOfficer"><span>Responsible officer (name, mobile)</span><input type="text" id="fOfficer" placeholder="e.g. Tmt. R. Kavitha, AD (Panchayat), 94xxxxxxxx"></label>
+    <label class="field" for="fNote"><span>Instruction as recorded in minutes</span><textarea id="fNote" rows="2" placeholder="Optional"></textarea></label>
+    <datalist id="depList">${allDeps().map(([d])=>`<option value="${esc(d)}">`).join("")}</datalist>`;
+  } else {
+    h+=`<div class="facts"><div>First raised<b>${dmy(it.first)}</b></div><div>Last raised<b>${dmy(it.last)}</b></div><div>Meetings<b>${it.times||0}</b></div></div>
+    <div>${ragPill(it)} ${flagPill(it)} ${escTag(it).replace("<span class=\"esc","<span style=\"display:inline\" class=\"esc")} ${it.support?`<span class="ro">&nbsp;Supporting: ${esc(it.support)}</span>`:""}</div>
+    <div class="grid2"><label class="field" for="fStatus"><span>Status</span><select id="fStatus" ${dis}>${STATUSES.map(s=>`<option ${s===it.status?"selected":""}>${s}</option>`).join("")}</select></label>
+    <label class="field" for="fDue"><span>Target date</span><input type="date" id="fDue" value="${esc(it.due)}" ${dis}></label></div>
+    <label class="field" for="fOfficer"><span>Responsible officer (name, mobile)</span><input type="text" id="fOfficer" value="${esc(it.officer)}" placeholder="Who will actually do this" ${dis}></label>
+    <label class="field" for="fNote"><span>Add progress update</span><textarea id="fNote" rows="2" placeholder="e.g. 02.11: ATR received, 12 of 43 buildings demolished" ${dis}></textarea></label>
+    <div class="grid2"><label class="field" for="fNoteDate"><span>Update date</span><input type="date" id="fNoteDate" value="${state.asof}" ${dis}></label>
+    <label class="field" for="fReviewed" style="justify-content:flex-end"><span style="display:flex;gap:6px;align-items:center;font-weight:500;color:var(--ink)"><input type="checkbox" id="fReviewed" checked ${dis}> Reviewed in this meeting</span></label></div>
+    ${canWrite&&active(it)?`<div class="opts"><button class="btn" type="button" id="qDone">Closed in meeting today</button><span class="ro">Sets status to Done with the meeting as evidence. Then press Save.</span></div>`:""}
+    <label class="field" for="fEvidence"><span>Evidence / ATR link</span><input type="text" id="fEvidence" value="${esc(it.evidence)}" placeholder="Link to ATR PDF, photo, or letter number" ${dis}></label>
+    <label class="field" for="fRemarks"><span>Remarks</span><input type="text" id="fRemarks" value="${esc(it.remarks)}" ${dis}></label>
+    <h3>History</h3>
+    <ul class="hist">${(it.history||[]).slice().reverse().map(x=>`<li><div class="when">${dmy(x.d)}${x.s?` · set to ${esc(x.s)}`:""}${x.src==="minutes"?" · from minutes":""}${x.by?` · <span data-uid="${esc(x.by)}"></span>`:""}</div>${esc(x.t)}</li>`).join("")||'<li class="ro">No updates yet.</li>'}</ul>`;
+  }
+  $("#dBody").innerHTML=h;
+  $("#dSave").hidden=!canWrite; $("#dCancel").textContent=canWrite?"Cancel":"Close";
+  $("#dMsg").textContent=canWrite?"":"You can view this tracker but not change it.";
+  $("#dSave").textContent=isNew?"Add action":"Save";
+  $("#scrim").hidden=false;$("#drawer").hidden=false;
+  const q=$("#qDone");if(q)q.addEventListener("click",()=>{$("#fStatus").value="Done";if(!$("#fEvidence").value)$("#fEvidence").value=meetText("done");if(!$("#fNote").value)$("#fNote").value="Closed in HOD meeting.";$("#dSave").focus()});
+  setTimeout(()=>($("#fAction")||$("#fStatus")||$("#dClose")).focus(),30);
+  resolveNames();
+}
+function closeDrawer(){$("#scrim").hidden=true;$("#drawer").hidden=true;editing=null}
+async function resolveNames(){
+  if(!user||!user.profiles) return;
+  const els=[...document.querySelectorAll("[data-uid]")]; if(!els.length) return;
+  try{const ps=await user.profiles([...new Set(els.map(e=>e.dataset.uid))]);
+    els.forEach(e=>{const p=ps&&ps[e.dataset.uid];e.textContent=(p&&p.name)||"Someone"})}catch(e){}
+}
+function nextId(){
+  const n=items.map(i=>parseInt(String(i.id).replace(/\D/g,""),10)||0);
+  return "A-"+String((n.length?Math.max(...n):0)+1).padStart(3,"0");
+}
+async function save(){
+  if(saving||!db) return;
+  const msg=$("#dMsg");
+  saving=true;$("#dSave").disabled=true;msg.textContent="Saving…";
+  try{
+    if(!editing){
+      const action=$("#fAction").value.trim(), owner=$("#fOwner").value.trim();
+      if(!action||!owner){msg.textContent="Enter the action item and the owner department.";return}
+      if(!$("#fDue").value){msg.textContent="Set a target date. Every action needs one so it can be tracked.";return}
+      const first=$("#fFirst").value||state.asof, note=$("#fNote").value.trim();
+      let id=nextId();
+      for(let i=0;i<5;i++){const s=await db.doc("actions/"+id).get(); if(!s.exists) break; id="A-"+String(parseInt(id.slice(2),10)+1).padStart(3,"0")}
+      const doc={id,owner,officer:$("#fOfficer").value.trim(),support:$("#fSupport").value.trim(),action,first,last:first,times:1,due:$("#fDue").value||"",status:"Open",evidence:"",remarks:"",
+        history:[{d:first,t:note||"Instructed in HOD meeting.",s:"Open",by:me||""}],updatedAt:new Date().toISOString(),updatedBy:me||""};
+      await db.doc("actions/"+id).set(doc);
+      toast(`Added ${id}`);closeDrawer();
+    } else {
+      const it=editing, status=$("#fStatus").value, due=$("#fDue").value||"", note=$("#fNote").value.trim(), nd=$("#fNoteDate").value||state.asof;
+      const evidence=$("#fEvidence").value.trim(), remarks=$("#fRemarks").value.trim(), reviewed=$("#fReviewed").checked;
+      const patch={};
+      if(status!==it.status) patch.status=status;
+      if(due!==(it.due||"")) patch.due=due;
+      if(evidence!==(it.evidence||"")) patch.evidence=evidence;
+      if(remarks!==(it.remarks||"")) patch.remarks=remarks;
+      const officer=$("#fOfficer").value.trim(); if(officer!==(it.officer||"")) patch.officer=officer;
+      if(status==="Done"&&!evidence&&it.status!=="Done"){msg.textContent="Add the ATR or photo evidence before marking this Done.";return}
+      if(note||patch.status){
+        const h=(it.history||[]).slice();
+        h.push({d:nd,t:note||`Status changed to ${status}.`,s:patch.status||"",by:me||""});
+        patch.history=h;
+      }
+      if(reviewed&&(note||patch.status)&&(!it.last||nd>it.last)){patch.last=nd;patch.times=(it.times||0)+1}
+      if(!Object.keys(patch).length){closeDrawer();return}
+      patch.updatedAt=new Date().toISOString();patch.updatedBy=me||"";
+      await db.doc("actions/"+it.id).update(patch);
+      toast(`Saved ${it.id}`);closeDrawer();
+    }
+  }catch(e){
+    if(e&&e.code==="invalid_argument"){canWrite=false;msg.textContent="This tracker is view-only for you. Ask the owner for Contributor access."}
+    else if(e&&e.code==="quota_exceeded"){msg.textContent="The tracker is full. Delete old items before adding new ones."}
+    else msg.textContent="Could not save. Check your connection and try again.";
+  }finally{saving=false;$("#dSave").disabled=false;if(msg.textContent==="Saving…")msg.textContent=""}
+}
+function toast(t){const el=$("#toast");el.textContent=t;el.hidden=false;clearTimeout(toast._t);toast._t=setTimeout(()=>el.hidden=true,2200)}
+
+/* ---------- export ---------- */
+async function exportCsv(){
+  const dl=await claude.use("downloads"); if(!dl) return;
+  const cols=["ID","Owner (department)","Supporting / dependent dept","Action item","First raised","Last raised","Meetings raised in","Latest status","Target date","Status","Flag","RAG","Escalation","Responsible officer","Overdue","Weeks open","Evidence / ATR link","Remarks"];
+  const q=v=>{v=String(v??"");return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v};
+  const rows=items.slice().sort((a,b)=>a.id.localeCompare(b.id)).map(it=>{const l=latestOf(it);return [it.id,it.owner,it.support,it.action,dmy(it.first),dmy(it.last),it.times,l?`${dmy(l.d)}: ${l.t}`:"",dmy(it.due),it.status,flagOf(it),RAGNAME[ragOf(it)],(e=>e?`L${e.lvl} ${e.who}`:"")(escOf(it)),it.officer||"",overdue(it)?"Yes":"",weeks(it),it.evidence,it.remarks]});
+  const csv="﻿"+[cols,...rows].map(r=>r.map(q).join(",")).join("\r\n");
+  try{await dl.save({filename:`HOD Action Items ${dmy(state.asof)}.csv`,data:csv})}catch(e){}
+}
+
+/* ---------- render all ---------- */
+function render(){renderTally();renderList();if(state.tab==="fu")renderDeps();if(state.tab==="agenda")renderAgenda();if(state.tab==="score")renderScore()}
+
+/* ---------- scorecard ---------- */
+const pct=(a,b)=>b?Math.round(100*a/b)+"%":"–";
+function renderScore(){
+  if(!loaded){$("#kpis").innerHTML='<div class="empty">Loading…</div>';return}
+  const act=items.filter(active), closed=items.filter(it=>it.status==="Done");
+  const withDue=act.filter(it=>it.due);
+  const doneOnTime=closed.filter(it=>{const d=(it.history||[]).filter(h=>h.s==="Done").pop();return it.due&&d&&d.d<=it.due}).length;
+  const closedWithDue=closed.filter(it=>it.due).length;
+  const fresh=act.filter(it=>days(state.asof,lastTouch(it))<=14).length;
+  const avgAge=act.length?(act.reduce((s,it)=>s+(+weeks(it)||0),0)/act.length).toFixed(1):"–";
+  const red=act.filter(it=>ragOf(it)==="R").length;
+  const K=[["Open actions",act.length,`${red} Red`],["Closure rate",pct(closed.length,items.length),`${closed.length} of ${items.length} closed`],
+    ["On-time closure",closedWithDue?pct(doneOnTime,closedWithDue):"–",closedWithDue?`${doneOnTime} of ${closedWithDue} with a target date`:"No closed items with target dates yet"],
+    ["Average age",avgAge+(avgAge==="–"?"":" wks"),"Open items, since first raised"],
+    ["Have a target date",pct(withDue.length,act.length),`${act.length-withDue.length} still without one`],
+    ["Updated in 14 days",pct(fresh,act.length),`${act.length-fresh} gone quiet`]];
+  $("#kpis").innerHTML=K.map(([l,n,s])=>`<div class="kpi"><div class="l">${l}</div><div class="n">${n}</div><div class="s">${s}</div></div>`).join("");
+  const B=[["0–4 weeks",0,4],["4–8 weeks",4,8],["8–12 weeks",8,12],["12+ weeks",12,1e9]].map(([l,a,b])=>[l,act.filter(it=>{const w=+weeks(it)||0;return w>=a&&w<b}).length]);
+  const mx=Math.max(1,...B.map(b=>b[1]));
+  $("#ageing").innerHTML=B.map(([l,n])=>`<div class="hbar" title="${l}: ${n} open item${n===1?"":"s"}"><span class="ro">${l}</span><span class="track"><span class="fill" style="display:block;width:${100*n/mx}%"></span></span><span class="v">${n}</span></div>`).join("");
+  const rc={R:0,A:0,G:0};act.forEach(it=>rc[ragOf(it)]++);
+  const col={R:"var(--chronic)",A:"var(--silent)",G:"var(--done)"};
+  $("#ragmix").innerHTML=`<div class="stack">${["R","A","G"].filter(k=>rc[k]).map(k=>`<span style="flex:${rc[k]};background:${col[k]}" title="${RAGNAME[k]}: ${rc[k]}"></span>`).join("")}</div>
+    <div class="legend">${["R","A","G"].map(k=>`<span><i style="background:${col[k]}"></i>${RAGNAME[k]} <b style="color:var(--ink)">${rc[k]}</b> (${pct(rc[k],act.length)})</span>`).join("")}</div>
+    <p class="ro" style="margin:12px 0 0;font-size:12.5px">${act.length-withDue.length?`Most Amber items are Amber only because they have no target date. Setting target dates turns them Green or Red.`:""}</p>`;
+  const deps=new Map();
+  for(const it of items){const d=splitDeps(it.owner)[0]||"Unassigned";const e=deps.get(d)||{open:0,R:0,A:0,G:0,closed:0,total:0,oldest:0,l3:0};
+    e.total++;if(active(it)){e.open++;e[ragOf(it)]++;e.oldest=Math.max(e.oldest,+weeks(it)||0);if((escOf(it)||{}).lvl===3)e.l3++}else if(it.status==="Done")e.closed++;deps.set(d,e)}
+  const lq=$("#lgQ").value.trim().toLowerCase(),srt=$("#lgSort").value;
+  const S={red:(a,b)=>b[1].R-a[1].R||b[1].oldest-a[1].oldest,open:(a,b)=>b[1].open-a[1].open||b[1].R-a[1].R,oldest:(a,b)=>b[1].oldest-a[1].oldest,l3:(a,b)=>b[1].l3-a[1].l3||b[1].R-a[1].R,name:(a,b)=>a[0].localeCompare(b[0])};
+  const rows=[...deps.entries()].filter(([d,e])=>e.open&&(!lq||d.toLowerCase().includes(lq))&&(!$("#lgRed").checked||e.R)&&(!$("#lgL3").checked||e.l3)).sort(S[srt]||S.red);
+  $("#league").innerHTML=`<table><thead><tr><th>#</th><th>Department (lead owner)</th><th class="num">Open</th><th class="num">Red</th><th class="num">Amber</th><th class="num">Green</th><th>RAG</th><th class="num">Oldest (wks)</th><th class="num">Closed</th><th class="num">With Collector</th></tr></thead><tbody>`+
+    (rows.length?"":`<tr><td colspan="10" class="ro" style="text-align:center;padding:20px">No departments match.</td></tr>`)+rows.map(([d,e],i)=>`<tr data-d="${esc(d)}"><td class="ro">${i+1}</td><td>${esc(d)}</td><td class="num">${e.open}</td><td class="num">${e.R||""}</td><td class="num">${e.A||""}</td><td class="num">${e.G||""}</td>
+      <td><span class="mini">${["R","A","G"].filter(k=>e[k]).map(k=>`<span style="flex:${e[k]};background:${col[k]}"></span>`).join("")}</span></td><td class="num">${e.oldest}</td><td class="num">${e.closed}/${e.total}</td><td class="num">${e.l3||""}</td></tr>`).join("")+`</tbody></table>`;
+}
+["lgQ","lgSort","lgRed","lgL3"].forEach(id=>$("#"+id).addEventListener(id==="lgQ"?"input":"change",renderScore));
+$("#league").addEventListener("click",e=>{const r=e.target.closest("tr[data-d]");if(!r)return;state.dep=r.dataset.d;renderDepSelect();state.tally="";state.st="active";$("#st").value="active";setTab("items");renderList()});
+
+/* ---------- meeting agenda ---------- */
+const sev=it=>(overdue(it)?0:10)+({"Chronic":0,"Silent - confirm":1,"Open":2}[flagOf(it)]??3);
+function agendaGroups(){
+  const only=$("#agOnly").checked;
+  const ad=$("#agDep").value,ar=$("#agRag").value,ae=$("#agEsc").value;
+  const pick=items.filter(it=>active(it)&&(!only||overdue(it)||flagOf(it)!=="Open")&&depMatch(it,ad)&&(!ar||ragOf(it)===ar)&&(!ae||ae.includes(String((escOf(it)||{}).lvl))));
+  const g=new Map();
+  for(const it of pick){const k=it.owner||"Unassigned";if(!g.has(k))g.set(k,[]);g.get(k).push(it)}
+  const arr=[...g.entries()].map(([k,v])=>[k,v.sort((a,b)=>sev(a)-sev(b)||a.id.localeCompare(b.id))]);
+  return arr.sort((a,b)=>b[1].filter(x=>flagOf(x)==="Chronic").length-a[1].filter(x=>flagOf(x)==="Chronic").length||b[1].length-a[1].length||a[0].localeCompare(b[0]));
+}
+function renderAgenda(){
+  if(!loaded){$("#agenda").innerHTML='<div class="empty">Loading…</div>';return}
+  const gs=agendaGroups();
+  if(!gs.length){$("#agenda").innerHTML='<div class="empty">Nothing pending under these filters.</div>';return}
+  $("#agenda").innerHTML=gs.map(([d,list])=>`<div class="ag"><header><span>${esc(d)}</span><span class="ro">${list.length} item${list.length>1?"s":""}</span></header>`+
+    list.map(it=>{const l=latestOf(it),rev=it.last===state.asof,sl=agSel.has(it.id);return `<div class="ag-row ${sl?"sel":""}" data-row="${esc(it.id)}">
+      <input type="checkbox" data-sel="${esc(it.id)}" aria-label="Select ${esc(it.id)}" ${sl?"checked":""} ${canWrite?"":"disabled"}>
+      <span class="id">${esc(it.id)}</span>
+      <span style="min-width:0"><div class="t">${esc(it.action)}</div>${l?`<div class="latest">${esc(l.t)}</div>`:""}<div class="ro" style="font-size:12px;margin-top:2px">${it.times||0} meetings since ${dmy(it.first)}${it.due?` · due ${dmy(it.due)}`:""}</div></span>
+      <span class="side"><span class="flags">${ragPill(it)} ${flagPill(it)}</span>${canWrite?`<span class="acts">${rev?'<span class="ro" style="font-size:12px">Reviewed today</span>':`<button class="btn" type="button" data-act="rev" data-id="${esc(it.id)}">Reviewed</button>`}<button class="btn" type="button" data-act="done" data-id="${esc(it.id)}">Done</button><button class="btn" type="button" data-act="drop" data-id="${esc(it.id)}">Drop</button></span>`:""}</span>
+      ${agOpen===it.id?`<div class="closer"><b>${agMode==="drop"?"Drop":"Close"} ${esc(it.id)}:</b><input type="text" id="cEv" placeholder="${agMode==="drop"?"Reason, e.g. Dropped by Collector, merged with A-012":"ATR no. or photo link"}"><button class="btn" type="button" data-act="meet">${agMode==="drop"?"Dropped in meeting":"Closed in meeting"}</button><button class="btn primary" type="button" data-act="confirm" data-id="${esc(it.id)}">Confirm</button><button class="btn ghost" type="button" data-act="cancel">Cancel</button></div>`:""}</div>`}).join("")+`</div>`).join("");
+  if(agOpen){const i=$("#cEv");if(i)i.focus()}
+  renderSelbar();
+}
+let agSel=new Set(), agOpen="", agMode="done";
+function renderSelbar(){const n=[...agSel].filter(id=>items.some(x=>x.id===id&&active(x))).length;$("#selbar").hidden=!n;$("#selN").textContent=`${n} selected`}
+async function closeItems(ids,status,evidence){
+  if(!db)return 0;let ok=0;
+  for(const id of ids){const it=items.find(x=>x.id===id);if(!it||!active(it))continue;
+    try{const h=(it.history||[]).slice();h.push({d:state.asof,t:status==="Done"?`Closed. Evidence: ${evidence}`:`Dropped. ${evidence}`,s:status,by:me||""});
+      const patch={status,history:h,updatedAt:new Date().toISOString(),updatedBy:me||""};
+      if(status==="Done")patch.evidence=evidence;else patch.remarks=[it.remarks,evidence].filter(Boolean).join(" · ");
+      if(!it.last||state.asof>it.last){patch.last=state.asof;patch.times=(it.times||0)+1}
+      await db.doc("actions/"+id).update(patch);ok++;agSel.delete(id)}catch(e){}}
+  return ok;
+}
+const meetText=mode=>`${mode==="drop"?"Dropped":"Closure confirmed"} in HOD meeting on ${dmy(state.asof)}`;
+function agendaText(){
+  let t=`A. Pending from previous meetings (as of ${dmy(state.asof)})\n`;
+  agendaGroups().forEach(([d,list],i)=>{
+    t+=`\n${i+1}. ${d}\n`;
+    list.forEach(it=>{const f=flagOf(it),l=latestOf(it);const tags=[];if(f==="Chronic")tags.push(`Chronic, ${it.times} meetings`);if(f==="Silent - confirm")tags.push("Silent, confirm status");if(overdue(it))tags.push(`Overdue since ${dmy(it.due)}`);
+      const e=escOf(it);tags.unshift(RAGNAME[ragOf(it)]);if(e&&e.lvl>1)tags.push(`Escalated L${e.lvl} to ${e.who}`);
+      t+=`   • ${it.id} ${it.action}${tags.length?` [${tags.join("; ")}]`:""}\n${l?`     Last: ${l.t}\n`:""}`});
+  });
+  return t;
+}
+async function markReviewed(id,box){
+  const it=items.find(x=>x.id===id);if(!it||!db||it.last===state.asof)return;
+  box.disabled=true;
+  try{const h=(it.history||[]).slice();h.push({d:state.asof,t:"Reviewed in HOD meeting.",s:"",by:me||""});
+    await db.doc("actions/"+id).update({last:state.asof,times:(it.times||0)+1,history:h,updatedAt:new Date().toISOString(),updatedBy:me||""});
+    toast(`${id} marked as reviewed on ${dmy(state.asof)}`)}
+  catch(e){box.checked=false;box.disabled=false;toast("Could not save. Check your connection and try again.")}
+}
+$("#agenda").addEventListener("change",e=>{const b=e.target.closest("[data-sel]");if(!b)return;b.checked?agSel.add(b.dataset.sel):agSel.delete(b.dataset.sel);b.closest(".ag-row").classList.toggle("sel",b.checked);renderSelbar()});
+$("#agenda").addEventListener("click",async e=>{const b=e.target.closest("[data-act]");if(!b)return;const a=b.dataset.act,id=b.dataset.id;
+  if(a==="rev"){b.disabled=true;await markReviewed(id,b);return}
+  if(a==="done"||a==="drop"){agOpen=id;agMode=a;renderAgenda();return}
+  if(a==="cancel"){agOpen="";renderAgenda();return}
+  if(a==="meet"){$("#cEv").value=meetText(agMode);return}
+  if(a==="confirm"){const ev=$("#cEv").value.trim();if(!ev){$("#cEv").placeholder=agMode==="drop"?"Give a reason before dropping":"Add the ATR reference or tap Closed in meeting";$("#cEv").focus();return}
+    b.disabled=true;const n=await closeItems([id],agMode==="drop"?"Dropped":"Done",ev);agOpen="";toast(n?`${id} ${agMode==="drop"?"dropped":"closed"}`:"Could not save. Try again.")}
+});
+$("#selMeet").addEventListener("click",()=>{$("#selEv").value=meetText("done")});
+$("#selClear").addEventListener("click",()=>{agSel.clear();renderAgenda()});
+$("#selRev").addEventListener("click",async()=>{const ids=[...agSel];for(const id of ids){await markReviewed(id,{disabled:false,checked:false})}agSel.clear();renderAgenda();toast(`${ids.length} marked as reviewed`)});
+for(const [btn,st] of [["selDone","Done"],["selDrop","Dropped"]])$("#"+btn).addEventListener("click",async()=>{
+  const ev=$("#selEv").value.trim();if(!ev){$("#selEv").placeholder=st==="Done"?"Add the ATR reference or tap Closed in meeting first":"Give a reason for dropping first";$("#selEv").focus();return}
+  const n=await closeItems([...agSel],st,ev);$("#selEv").value="";renderAgenda();toast(`${n} item${n===1?"":"s"} ${st==="Done"?"closed":"dropped"}`)});
+["agOnly","agDep","agRag","agEsc"].forEach(id=>$("#"+id).addEventListener("change",renderAgenda));
+$("#copyAgenda").addEventListener("click",()=>{const t=agendaText();navigator.clipboard.writeText(t).then(()=>toast("Agenda copied. Paste it into section A of the minutes."),()=>{toast("Copy was blocked by the browser.")})});
+
+/* ---------- import minutes ---------- */
+let cands=[], sampleFn=null, candShow="";
+$("#impDate").value=state.asof;
+$("#impFile").addEventListener("change",async e=>{
+  const f=e.target.files[0];if(!f)return;const msg=$("#impMsg");
+  try{
+    if(/\.docx$/i.test(f.name)){
+      if(!window.mammoth){msg.textContent="The Word reader did not load. Paste the text instead.";return}
+      const r=await mammoth.extractRawText({arrayBuffer:await f.arrayBuffer()});$("#impText").value=r.value.trim();
+    } else $("#impText").value=(await f.text()).trim();
+    msg.textContent=`Read ${f.name}.`;
+    const m=$("#impText").value.match(/(\d{2})[.\/-](\d{2})[.\/-](20\d{2})/);if(m)$("#impDate").value=`${m[3]}-${m[2]}-${m[1]}`;
+  }catch(err){msg.textContent="That file could not be read. Paste the text instead."}
+});
+$("#impRun").addEventListener("click",async()=>{
+  const text=$("#impText").value.trim(),msg=$("#impMsg"),btn=$("#impRun");
+  if(!text){msg.textContent="Upload or paste the minutes first.";return}
+  if(!sampleFn){msg.textContent="Asking Claude is not available in this view.";return}
+  btn.disabled=true;msg.textContent="Reading the minutes. This takes about a minute…";
+  const open=items.filter(active).map(it=>`${it.id} | ${it.owner} | ${it.action}`).join("\n");
+  const prompt=`You help the PA (General) of the Mayiladuthurai District Collectorate (Tamil Nadu) track action items from the weekly HOD review meeting chaired by the District Collector. Minutes may mix Tamil and English.
+
+EXISTING OPEN ACTION ITEMS (ID | owner department | action):
+${open}
+
+MINUTES OF THE MEETING ON ${dmy($("#impDate").value||state.asof)}:
+${text.slice(0,60000)}
+
+Extract every instruction or follow-up point that needs action by a department. For each one decide whether it is a repeat or progress report on an existing item above (kind "update", give its id) or a new instruction (kind "new"). Skip pure information points that ask for no action.
+
+Reply with only a JSON array. Each element:
+{"kind":"update"|"new","id":"A-001 or empty for new","owner":"department short name as used above, e.g. JD Health","support":"supporting department or empty","action":"short imperative action item in English, under 15 words","note":"what the minutes say this week, in English, one sentence, include figures","due":"YYYY-MM-DD if a deadline is stated, else empty","done":true if the minutes say it is completed, else false}
+Example: [{"kind":"update","id":"A-002","owner":"JR Cooperative","support":"DSO","action":"Reach 98% PDS e-KYC completion","note":"e-KYC at 97.1%, 40 shops still below 90%.","due":"","done":false}]`;
+  try{
+    const r=await sampleFn.json(prompt,{modelTier:"default"});
+    if(!Array.isArray(r))throw {code:"invalid_json"};
+    const ids=new Set(items.map(i=>i.id));
+    cands=r.filter(x=>x&&x.action).map(x=>({kind:x.kind==="update"&&ids.has(x.id)?"update":"new",id:ids.has(x.id)?x.id:"",owner:String(x.owner||""),support:String(x.support||""),action:String(x.action||""),note:String(x.note||""),due:/^\d{4}-\d{2}-\d{2}$/.test(x.due||"")?x.due:"",done:!!x.done,on:true}));
+    msg.textContent=cands.length?`Found ${cands.length} points. Check them, then save.`:"No action points were found in this text.";
+    renderCands();
+  }catch(e){
+    msg.textContent=e&&e.code==="not_granted"?"Allow Claude for this page to use import.":e&&e.code==="rate_limited"?"Too many requests just now. Wait a minute and try again.":"Claude could not read these minutes. Try a shorter section.";
+  }finally{btn.disabled=false}
+});
+function renderCands(){
+  const out=$("#impOut");
+  if(!cands.length){out.innerHTML="";return}
+  const opts=items.slice().sort((a,b)=>a.id.localeCompare(b.id)).map(i=>`<option value="${esc(i.id)}">${esc(i.id)} · ${esc(i.action.slice(0,50))}</option>`).join("");
+  const nNew=cands.filter(c=>c.on&&!c.id).length,nUpd=cands.filter(c=>c.on&&c.id).length;
+  out.innerHTML=`<div class="cand"><header><b>${nUpd} updates, ${nNew} new actions selected</b><select id="candShow" aria-label="Show"><option value="">Show all</option><option value="new" ${candShow==="new"?"selected":""}>New actions only</option><option value="upd" ${candShow==="upd"?"selected":""}>Updates only</option><option value="off" ${candShow==="off"?"selected":""}>Unticked only</option></select><button class="btn primary" id="impSave" type="button" ${canWrite&&(nNew+nUpd)?"":"disabled"}>Save selected</button></header>`+
+  cands.map((c,i)=>(candShow==="new"&&c.id)||(candShow==="upd"&&!c.id)||(candShow==="off"&&c.on)?"":`<div class="cand-row"><input type="checkbox" data-ci="${i}" data-f="on" ${c.on?"checked":""} aria-label="Include">
+   <div class="fields"><div class="top"><span class="pill ${c.id?"kind-upd":"kind-new"}">${c.id?"Update":"New"}</span>
+    <select data-ci="${i}" data-f="id" aria-label="Matches action"><option value="">New action</option>${opts.replace(`value="${esc(c.id)}"`,`value="${esc(c.id)}" selected`)}</select>
+    ${c.done?'<span class="pill p-done">Reported done</span>':""}</div>
+    <input type="text" data-ci="${i}" data-f="action" value="${esc(c.action)}" aria-label="Action">
+    <div class="grid2"><input type="text" data-ci="${i}" data-f="owner" value="${esc(c.owner)}" aria-label="Owner"><input type="date" data-ci="${i}" data-f="due" value="${esc(c.due)}" aria-label="Due date"></div>
+    <textarea rows="2" data-ci="${i}" data-f="note" aria-label="This week's note">${esc(c.note)}</textarea></div></div>`).join("")+`</div>`;
+}
+$("#impOut").addEventListener("change",e=>{if(e.target.id==="candShow"){candShow=e.target.value;renderCands();return}const el=e.target.closest("[data-ci]");if(!el)return;const c=cands[+el.dataset.ci],f=el.dataset.f;
+  if(f==="on")c.on=el.checked;else if(f==="id"){c.id=el.value;const it=items.find(x=>x.id===c.id);if(it){c.owner=it.owner}}else c[f]=el.value;
+  if(f==="on"||f==="id")renderCands()});
+$("#impOut").addEventListener("input",e=>{const el=e.target.closest("[data-ci]");if(el&&el.dataset.f!=="on"&&el.dataset.f!=="id")cands[+el.dataset.ci][el.dataset.f]=el.value});
+$("#impOut").addEventListener("click",async e=>{
+  if(e.target.id!=="impSave"||!db)return;const btn=e.target;btn.disabled=true;
+  const md=$("#impDate").value||state.asof,msg=$("#impMsg");let ok=0,fail=0;let next=parseInt(nextId().slice(2),10);
+  for(const c of cands.filter(c=>c.on)){
+    try{
+      const it=c.id&&items.find(x=>x.id===c.id);
+      if(it){const h=(it.history||[]).slice();h.push({d:md,t:c.note||"Reviewed in HOD meeting.",s:c.done?"Reported done":"",by:me||"",src:"minutes"});
+        const patch={history:h,updatedAt:new Date().toISOString(),updatedBy:me||""};
+        if(!it.last||md>it.last){patch.last=md;patch.times=(it.times||0)+1}
+        if(c.due&&c.due!==it.due)patch.due=c.due;
+        if(it.status==="Open"&&!c.done)patch.status="In progress";
+        await db.doc("actions/"+it.id).update(patch);
+      } else {
+        let id="A-"+String(next++).padStart(3,"0");
+        await db.doc("actions/"+id).set({id,owner:c.owner||"Unassigned",support:c.support,action:c.action,first:md,last:md,times:1,due:c.due,status:"Open",evidence:"",remarks:"",
+          history:[{d:md,t:c.note||"Instructed in HOD meeting.",s:"Open",by:me||"",src:"minutes"}],updatedAt:new Date().toISOString(),updatedBy:me||""});
+      }
+      ok++;c.on=false;
+    }catch(err){fail++}
+  }
+  msg.textContent=fail?`Saved ${ok}. ${fail} could not be saved; they are still ticked.`:`Saved ${ok} items from the ${dmy(md)} minutes.`;
+  if(!fail)cands=[];renderCands();toast(`Saved ${ok} items`);
+});
+
+/* ---------- events ---------- */
+$("#tally").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;state.tally=b.dataset.t;if(!state.tally){state.st="active";$("#st").value="active"}render()});
+$("#q").addEventListener("input",e=>{state.q=e.target.value;renderList()});
+$("#dep").addEventListener("change",e=>{state.dep=e.target.value;renderList()});
+$("#ragSel").addEventListener("change",e=>{state.rag=e.target.value;renderList()});
+[["flagSel","flag"],["escSel","esc"],["dueSel","due"],["ageSel","age"],["sortSel","sort"]].forEach(([id,k])=>$("#"+id).addEventListener("change",e=>{state[k]=e.target.value;renderList()}));
+$("#clearF").addEventListener("click",()=>{Object.assign(state,{tally:"",q:"",dep:"",rag:"",flag:"",esc:"",due:"",age:"",sort:"",st:"active"});
+  ["q","dep","ragSel","flagSel","escSel","dueSel","ageSel","sortSel"].forEach(id=>$("#"+id).value="");$("#st").value="active";render()});
+$("#st").addEventListener("change",e=>{state.st=e.target.value;state.tally="";render()});
+$("#asof").addEventListener("change",e=>{state.asof=e.target.value||todayISO();render()});
+$("#list").addEventListener("click",e=>{const r=e.target.closest(".row[data-id]");if(!r)return;const it=items.find(x=>x.id===r.dataset.id);if(it)openDrawer(it)});
+$("#newBtn").addEventListener("click",()=>openDrawer(null));
+$("#exportBtn").addEventListener("click",exportCsv);
+$("#dClose").addEventListener("click",closeDrawer);$("#dCancel").addEventListener("click",closeDrawer);$("#scrim").addEventListener("click",closeDrawer);
+$("#dSave").addEventListener("click",save);
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!$("#drawer").hidden)closeDrawer()});
+const TABS=["items","score","agenda","fu","import"];
+function setTab(t){state.tab=t;TABS.forEach(x=>{$("#tab-"+x).setAttribute("aria-selected",x===t);$("#view-"+x).hidden=x!==t});if(t==="fu")renderDeps();if(t==="agenda")renderAgenda();if(t==="score")renderScore();try{if(location.hash!=="#"+t)history.replaceState(null,"","#"+t)}catch(e){}}
+TABS.forEach(x=>$("#tab-"+x).addEventListener("click",()=>setTab(x)));
+window.addEventListener("hashchange",()=>{const t=location.hash.slice(1);if(TABS.includes(t))setTab(t)});
+$("#deps").addEventListener("click",e=>{const b=e.target.closest("button[data-d]");if(!b)return;state.fuDep=b.dataset.d;renderDeps()});
+["incSupport","incTamil"].forEach(id=>$("#"+id).addEventListener("change",buildMsg));
+$("#fuQ").addEventListener("input",renderDeps);$("#fuScope").addEventListener("change",renderDeps);
+$("#sig").addEventListener("input",()=>{store("hod.sig",$("#sig").value);buildMsg()});
+$("#copyMsg").addEventListener("click",()=>{const t=$("#msg").value;navigator.clipboard.writeText(t).then(()=>toast("Message copied. Paste it in WhatsApp."),()=>{$("#msg").select();toast("Press Ctrl+C to copy the selected text.")})});
+let rt;window.addEventListener("resize",()=>{clearTimeout(rt);rt=setTimeout(renderList,150)});
+
+/* ---------- data ---------- */
+renderTally();
+function notice(t){const n=$("#notice");n.textContent=t||"";n.hidden=!t}
+(async()=>{
+  if(!window.claude||!claude.use){notice("The app could not start. Check your internet connection and reload.");return}
+  claude.use("downloads").then(d=>{if(d)$("#exportBtn").hidden=false});
+  claude.use("sample").then(s=>{sampleFn=s;if(!s){$("#tab-import").hidden=true;$("#impRun").disabled=true;$("#impMsg").textContent="Import needs Claude, which is not available in this view."}});
+  {const t=location.hash.slice(1);if(TABS.includes(t)&&t!=="items")setTab(t)}
+  user=await claude.use("user");
+  if(user){try{me=await user.id()}catch(e){} try{const c=await user.can("data.write");if(c===false)canWrite=false}catch(e){}}
+  if(!canWrite){$("#newBtn").hidden=true}
+  db=await claude.use("db");
+  if(!db){notice("Could not connect to the database. Check your internet connection and reload.");$("#list").innerHTML=`<div class="empty">The action items could not be loaded in this view.</div>`;return}
+  let timer=setTimeout(()=>notice("The tracker is taking longer than usual to load. Items shown may be out of date."),10000);
+  db.collection("actions").onSnapshot(snap=>{
+    items=snap.docs.map(d=>d.data()).filter(Boolean);
+    loaded=true;
+    if(!snap.metadata.fromCache){clearTimeout(timer);notice("")}
+    renderDepSelect();render();
+  },err=>{clearTimeout(timer);loaded=true;notice("The action items could not be loaded. Reopen the tracker to try again.");render()});
+})();
+})();
+</script>
+
+</body>
+</html>
