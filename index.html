@@ -41,7 +41,8 @@ const COL="hodActions";
 /* SHA-256 of the editing passcode. Change it by replacing this hash. */
 const EDIT_HASH="aaaa98bf66bb04c8bcb91127e1fe0b8b8b148a756a381e428d4e9d00f79e2552";
 const LS={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{v==null?localStorage.removeItem(k):localStorage.setItem(k,v)}catch(e){}}};
-const isEditor=()=>LS.get("hod_editor_ok")===EDIT_HASH&&!!LS.get("hod_editor_name");
+const isEditor=()=>LS.get("hod_editor_ok")===EDIT_HASH;
+const adminName=()=>LS.get("hod_editor_name")||"Admin";
 const sha=async s=>[...new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(s)))].map(b=>b.toString(16).padStart(2,"0")).join("");
 
 let fs=null;
@@ -63,7 +64,7 @@ const db=fs&&{
     update:d=>{if(!isEditor())return Promise.reject({code:"invalid_argument"});return updateDoc(ref,d)}}}
 };
 const user={
-  id:async()=>LS.get("hod_editor_name")||"Viewer",
+  id:async()=>isEditor()?adminName():"Viewer",
   can:async()=>isEditor(),
   profiles:async ids=>Object.fromEntries(ids.map(i=>[i,{id:i,name:i}]))
 };
@@ -77,14 +78,10 @@ window.__hodBridgeReady(name=>({db,user,downloads}[name]??null));
 function addHeaderControls(){
   const bar=document.querySelector(".head-actions");if(!bar)return;
   const lock=document.createElement("button");lock.type="button";lock.className="btn";lock.id="lockBtn";
-  lock.textContent=isEditor()?`Editing as ${LS.get("hod_editor_name")} · Lock`:"Unlock editing";
-  lock.onclick=async()=>{
-    if(isEditor()){LS.set("hod_editor_ok",null);location.reload();return}
-    const p=window.prompt("Editing passcode");if(!p)return;
-    if(await sha(p.trim())!==EDIT_HASH){alert("That passcode is not correct.");return}
-    const n=(window.prompt("Your name and designation, shown in each item's history (e.g. PA (G))",LS.get("hod_editor_name")||"")||"").trim();
-    if(!n){alert("Enter your name to unlock editing.");return}
-    LS.set("hod_editor_ok",EDIT_HASH);LS.set("hod_editor_name",n);location.reload();
+  lock.textContent=isEditor()?`Admin: ${adminName()} · Log out`:"Admin login";
+  lock.onclick=()=>{
+    if(isEditor()){if(!confirm("Log out of admin?"))return;LS.set("hod_editor_ok",null);location.reload();return}
+    openLogin();
   };
   bar.prepend(lock);
   if(isEditor()&&db){
@@ -92,6 +89,28 @@ function addHeaderControls(){
     const inp=document.createElement("input");inp.type="file";inp.accept=".xlsx,.xls,.csv";inp.hidden=true;lab.appendChild(inp);
     inp.onchange=()=>importFile(inp);bar.insertBefore(lab,document.getElementById("newBtn"));
   }
+}
+function openLogin(){
+  let dlg=document.getElementById("loginDlg");
+  if(!dlg){
+    dlg=document.createElement("dialog");dlg.id="loginDlg";dlg.className="login-dlg";
+    dlg.innerHTML=`<form class="login-form">
+      <h2>Admin login</h2>
+      <p class="ro">Admins can add, update and close action items. Everyone else can view.</p>
+      <label class="field"><span>Admin password</span><input type="password" id="lgPass" autocomplete="current-password" required></label>
+      <label class="field"><span>Your name (optional, shown in each item's history)</span><input type="text" id="lgName" placeholder="e.g. PA (G)"></label>
+      <div class="lg-msg" id="lgMsg" role="status"></div>
+      <div class="login-acts"><button type="button" class="btn" id="lgCancel">Cancel</button><button type="submit" class="btn primary" id="lgGo">Log in</button></div>
+    </form>`;
+    document.body.appendChild(dlg);
+    const q=id=>dlg.querySelector("#"+id);
+    q("lgCancel").onclick=()=>dlg.close();
+    dlg.querySelector("form").addEventListener("submit",async ev=>{ev.preventDefault();
+      if(await sha(q("lgPass").value.trim())!==EDIT_HASH){q("lgMsg").textContent="Wrong password. Try again.";q("lgPass").select();return}
+      LS.set("hod_editor_ok",EDIT_HASH);LS.set("hod_editor_name",q("lgName").value.trim()||null);location.reload()});
+  }
+  dlg.querySelector("#lgPass").value="";dlg.querySelector("#lgName").value=LS.get("hod_editor_name")||"";dlg.querySelector("#lgMsg").textContent="";
+  dlg.showModal();setTimeout(()=>dlg.querySelector("#lgPass").focus(),50);
 }
 function toISO(v){
   if(!v)return "";if(v instanceof Date&&!isNaN(v))return new Date(v.getTime()-v.getTimezoneOffset()*6e4).toISOString().slice(0,10);
@@ -112,7 +131,7 @@ function importFile(input){
       const hd=rows[hi].map(c=>String(c).trim().toLowerCase()),col=re=>hd.findIndex(h=>re.test(h));
       const C={id:col(/^id$/),owner:col(/^owner/),support:col(/^supporting/),action:col(/^action item/),first:col(/^first raised/),last:col(/^last raised/),
         times:col(/^meetings raised/),latest:col(/^latest status/),due:col(/^(due|target) date/),status:col(/^status$/),ev:col(/^evidence/),rm:col(/^remarks/),off:col(/^responsible officer/)};
-      let add=0,skip=0;const by=LS.get("hod_editor_name")||"";
+      let add=0,skip=0;const by=adminName();
       for(const r of rows.slice(hi+1)){
         const id=String(r[C.id]||"").trim();if(!/^A-\d+/.test(id)||!String(r[C.action]||"").trim())continue;
         const ref=doc(fs,COL,id);if((await getDoc(ref)).exists()){skip++;continue}
@@ -202,6 +221,14 @@ body.side-collapsed .brand{padding-left:0;justify-content:center}
 body.side-collapsed .side-tog svg{transform:rotate(180deg)}
 body.side-collapsed nav.tabs button{justify-content:center;padding-inline:0}
 .menu-btn{display:none}
+.login-dlg{border:1px solid var(--line);border-radius:12px;padding:0;width:min(400px,calc(100vw - 32px));background:var(--paper);color:var(--ink);box-shadow:var(--shadow)}
+.login-dlg::backdrop{background:rgba(10,15,20,.45)}
+.login-form{display:flex;flex-direction:column;gap:12px;padding:20px}
+.login-form h2{font-family:var(--f-display);font-size:20px;margin:0}
+.login-form p{margin:0}
+.login-form input{width:100%}
+.lg-msg{color:var(--chronic);font-size:13px;min-height:1em}
+.login-acts{display:flex;gap:8px;justify-content:flex-end}
 .back-btn:not([hidden]){display:inline-flex}
 .side-scrim{position:fixed;inset:0;background:rgba(10,15,20,.38);z-index:16}
 .title-row{display:flex;align-items:center;gap:12px}
