@@ -202,6 +202,7 @@ body.side-collapsed .brand{padding-left:0;justify-content:center}
 body.side-collapsed .side-tog svg{transform:rotate(180deg)}
 body.side-collapsed nav.tabs button{justify-content:center;padding-inline:0}
 .menu-btn{display:none}
+.back-btn:not([hidden]){display:inline-flex}
 .side-scrim{position:fixed;inset:0;background:rgba(10,15,20,.38);z-index:16}
 .title-row{display:flex;align-items:center;gap:12px}
 @media (max-width:860px){
@@ -385,6 +386,7 @@ h2.sec{font-family:var(--f-display);font-size:19px;margin:0}
 
 <header class="top"><div class="wrap">
   <div class="title-row">
+    <button class="menu-btn back-btn" id="backBtn" type="button" aria-label="Back to action items" title="Back" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button>
     <button class="menu-btn" id="menuBtn" type="button" aria-controls="side" aria-label="Open menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
     <div>
       <div class="eyebrow">Mayiladuthurai Collectorate · Monday HOD Review Meeting</div>
@@ -710,6 +712,7 @@ function buildMsg(){
 /* ---------- drawer ---------- */
 let editing=null, saving=false;
 function openDrawer(it){
+  try{if(!(history.state&&history.state.d))history.pushState({d:1},"",location.href)}catch(e){}
   editing=it?{...it}:null;
   const isNew=!it;
   $("#dEyebrow").textContent=isNew?"New action item":`${it.id} · ${it.owner}`;
@@ -749,7 +752,7 @@ function openDrawer(it){
   setTimeout(()=>($("#fAction")||$("#fStatus")||$("#dClose")).focus(),30);
   resolveNames();
 }
-function closeDrawer(){$("#scrim").hidden=true;$("#drawer").hidden=true;editing=null}
+function closeDrawer(fromHistory){$("#scrim").hidden=true;$("#drawer").hidden=true;editing=null;if(!fromHistory){try{if(history.state&&history.state.d)history.back()}catch(e){}}}
 async function resolveNames(){
   if(!user||!user.profiles) return;
   const els=[...document.querySelectorAll("[data-uid]")]; if(!els.length) return;
@@ -1120,9 +1123,17 @@ $("#dClose").addEventListener("click",closeDrawer);$("#dCancel").addEventListene
 $("#dSave").addEventListener("click",save);
 document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!$("#drawer").hidden)closeDrawer()});
 const TABS=["items","score","agenda","fu","import"];
-function setTab(t){state.tab=t;TABS.forEach(x=>{$("#tab-"+x).setAttribute("aria-selected",x===t);$("#view-"+x).hidden=x!==t});if(t==="fu")renderDeps();if(t==="agenda")renderAgenda();if(t==="score")renderScore();try{if(location.hash!=="#"+t)history.replaceState(null,"","#"+t)}catch(e){}}
+let navDepth=0;
+try{if(!location.hash)history.replaceState(null,"","#items")}catch(e){}
+function setTab(t,fromHistory){state.tab=t;TABS.forEach(x=>{$("#tab-"+x).setAttribute("aria-selected",x===t);$("#view-"+x).hidden=x!==t});if(t==="fu")renderDeps();if(t==="agenda")renderAgenda();if(t==="score")renderScore();try{if(location.hash!=="#"+t){if(fromHistory===true)history.replaceState(null,"","#"+t);else{history.pushState(null,"","#"+t);navDepth++}}}catch(e){}
+  $("#backBtn").hidden=t==="items"}
 TABS.forEach(x=>$("#tab-"+x).addEventListener("click",()=>setTab(x)));
-window.addEventListener("hashchange",()=>{const t=location.hash.slice(1);if(TABS.includes(t))setTab(t)});
+window.addEventListener("popstate",()=>{
+  if(!$("#drawer").hidden){closeDrawer(true);return}
+  if(document.body.classList.contains("side-open")){document.getElementById("sideScrim").click()}
+  if(navDepth>0)navDepth--;
+  const t=location.hash.slice(1);setTab(TABS.includes(t)?t:"items",true)});
+$("#backBtn").addEventListener("click",()=>{if(navDepth>0)history.back();else setTab("items",true)});
 $("#deps").addEventListener("click",e=>{const b=e.target.closest("button[data-d]");if(!b)return;state.fuDep=b.dataset.d;renderDeps()});
 ["incSupport","incTamil"].forEach(id=>$("#"+id).addEventListener("change",buildMsg));
 $("#fuQ").addEventListener("input",renderDeps);$("#fuScope").addEventListener("change",renderDeps);
@@ -1137,7 +1148,7 @@ function notice(t){const n=$("#notice");n.textContent=t||"";n.hidden=!t}
   if(!window.claude||!claude.use){notice("The app could not start. Check your internet connection and reload.");return}
   claude.use("downloads").then(d=>{if(d)$("#exportBtn").hidden=false});
   claude.use("sample").then(s=>{sampleFn=s});
-  {const t=location.hash.slice(1);if(TABS.includes(t)&&t!=="items")setTab(t)}
+  {const t=location.hash.slice(1);if(TABS.includes(t)&&t!=="items")setTab(t,true)}
   user=await claude.use("user");
   if(user){try{me=await user.id()}catch(e){} try{const c=await user.can("data.write");if(c===false)canWrite=false}catch(e){}}
   if(!canWrite){$("#newBtn").hidden=true}
