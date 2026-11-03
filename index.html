@@ -475,7 +475,7 @@ h2.sec{font-family:var(--f-display);font-size:19px;margin:0}
   </section>
 
   <section id="view-import" hidden>
-    <div class="bar"><div><h2 class="sec">Import actions from this week's minutes</h2><p class="ro">Upload the minutes (.docx) or paste the text. Claude picks out each instruction, matches it to an existing Action ID where it is a repeat, and you approve before anything is saved.</p></div></div>
+    <div class="bar"><div><h2 class="sec">Import actions from this week's minutes</h2><p class="ro">Upload the Word minutes (.docx) or paste the text. The app reads them department by department, picks out each instruction, and matches repeats to an existing Action ID. Nothing is saved until you check the list and press <b>Save selected</b>.</p></div></div>
     <div class="imp">
       <div class="preview">
         <div class="grid2">
@@ -930,6 +930,72 @@ for(const [btn,st] of [["selDone","Done"],["selDrop","Dropped"]])$("#"+btn).addE
 $("#copyAgenda").addEventListener("click",()=>{const t=agendaText();navigator.clipboard.writeText(t).then(()=>toast("Agenda copied. Paste it into section A of the minutes."),()=>{toast("Copy was blocked by the browser.")})});
 
 /* ---------- import minutes ---------- */
+/* Rule-based minutes parser: department headings followed by points. */
+function parseMinutes(text,items,md){
+  const STOP=new Set("the a an of to in on and or for with by at from as be is are was were been had has have that this these those it its all any into under per their there which who whom will shall should may must not no than then so such also during previous current week next meeting review instructed instruct informed reported noted ensure department departments concerned officer officers immediately without fail before after within process improve progress expedite speed pending work works submit list status report follow activities issue issues related relating ensure complete completion conduct take action necessary".split(" "));
+  const stem=w=>w.replace(/(ings|ing|ions|ion|ies|es|ed|s)$/,"").slice(0,6);
+  const words=s=>String(s||"").toLowerCase().replace(/[^a-z0-9 ]+/g," ").split(/\s+/).filter(w=>w.length>2&&!STOP.has(w)).map(stem);
+  const norm=s=>String(s||"").toLowerCase().replace(/[^a-z0-9]+/g,"");
+  const deps=new Map();
+  for(const it of items)for(const d of [it.owner,...String(it.owner||"").split(/\s*\/\s*/),...String(it.support||"").split(/\s*\/\s*/)]){const k=norm(d);if(k.length>1&&!deps.has(k))deps.set(k,d.trim())}
+  const SKIP=/^(\(?p\.?t\.?o\.?\)?.*|date\b.*|time\b.*|hod.?s?\b.*meeting.*minutes?|minutes of.*|district collector,?|mayiladuthurai\.?|sd\/-.*|copy to.*|\/\/.*|-+)$/i;
+  const ACT=/\b(instruct|direct|submit|ensure|expedite|complete|conduct|follow up|improve|intensify|clear|start|identify|inspect|put up|resolve|speed up|take (?:necessary )?action|send|furnish|prepare|arrange|organi[sz]e|obtain)/i;
+  const INFO=/^(it was (informed|reported|noted|stated|observed)|the (status|progress)\b)/i;
+  const isHead=l=>{const t=l.replace(/[:\-–]+$/,"").trim();if(!t||t.length>48)return false;if(deps.has(norm(t))||/^general instructions?$/i.test(t))return true;
+    if(/[.?!]$/.test(l.trim()))return false;const w=t.split(/\s+/);return w.length<=6&&!ACT.test(t)&&!/\d{2}\.\d{2}/.test(t)};
+  const toISO=(d,m,y)=>`${y.length===2?"20"+y:y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`;
+  const addDays=(iso,n)=>{const d=new Date(iso+"T00:00:00Z");d.setUTCDate(d.getUTCDate()+n);return d.toISOString().slice(0,10)};
+  const lines=String(text).split(/\r?\n/).map(l=>l.replace(/\s+/g," ").trim()).filter(Boolean);
+  const out=[];let dept="",pending=[];
+  const flushInfo=()=>{if(pending.length){const last=[...out].reverse().find(c=>c._dept===dept);if(last)last.note=(last.note+" "+pending.join(" ")).trim();pending=[]}};
+  for(const l of lines){
+    if(SKIP.test(l))continue;
+    if(isHead(l)){flushInfo();dept=l.replace(/[:\-–]+$/,"").trim();continue}
+    if(!dept)continue;
+    const sentences=l.split(/(?<=[.])\s+(?=[A-Z])/);
+    for(const s of sentences){
+      if(INFO.test(s)&&!/instruct/i.test(s)){pending.push(s);continue}
+      if(!ACT.test(s)){pending.push(s);continue}
+      let owner=/^general instructions?$/i.test(dept)?"All departments":(deps.get(norm(dept))||dept),support="";
+      const m=s.match(/^(?:the\s+)?(.{2,60}?)\s+(?:department\s+)?(?:was|were)\s+(?:instructed|directed)\s+to\s+/i);
+      let action=s;
+      if(m){const named=m[1].replace(/\s+(department|dept\.?)$/i,"").trim();
+        const parts=named.split(/\s+and\s+|\s*,\s*/i).map(x=>x.trim()).filter(Boolean);
+        const known=parts.every(x=>deps.has(norm(x))||(x.split(/\s+/).length<=3&&/^[A-Z]/.test(x)&&!/^(a|an)\b/i.test(x)));
+        if(known){
+          if(!/^all\b/i.test(named)){const ps=parts.map(x=>deps.get(norm(x))||x);if(!ps.map(norm).includes(norm(owner))&&!/^general/i.test(dept))support=owner;owner=ps.join(" / ")}
+          action=s.slice(m[0].length)}}
+      action=action.replace(/^(it was\s+)?(instructed|directed)\s+to\s+/i,"").replace(/\s*\.\s*$/,"");
+      action=action.charAt(0).toUpperCase()+action.slice(1);
+      let due="";const dm=s.match(/(?:on or before|before|by|within)\s+(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})/i);
+      if(dm)due=toISO(dm[1],dm[2],dm[3]);else if(/before the next (review )?meeting/i.test(s)&&md)due=addDays(md,7);
+      const done=/\b(had|has|have) been completed\b|\bwas completed\b/i.test(s)&&!/pending|to be completed/i.test(s);
+      out.push({_dept:dept,owner,support,action:action.slice(0,220),note:pending.join(" "),due,done,raw:s});pending=[];
+    }
+  }
+  flushInfo();
+  // attach orphan info notes to next action of same dept
+  const cands=[];
+  for(let i=0;i<out.length;i++){const c=out[i];if(c._info){const nx=out.slice(i+1).find(x=>!x._info&&x._dept===c._dept);if(nx)nx.note=(c.note+" "+nx.note).trim();continue}cands.push(c)}
+  // match to open items
+  const pool=items.filter(it=>it.status==="Open"||it.status==="In progress").map(it=>{const h=(it.history||[]).slice(-1)[0];return {it,w:new Set(words(it.action+" "+(h?h.t:""))),aw:new Set(words(it.action)),own:String(it.owner||"").split(/\s*\/\s*/).map(norm)}});
+  for(const c of cands){
+    const ca=new Set(words(c.action)),cw=new Set(words(c.action+" "+c.note));const cdeps=[c.owner,c._dept,c.support].join("/").split(/\s*\/\s*/).map(norm);
+    let best=null,bs=0;
+    for(const p of pool){let inter=0;for(const w of cw)if(p.w.has(w))inter+=ca.has(w)?2:1;
+      const aInter=[...p.aw].filter(w=>cw.has(w)).length;
+      let sc=inter/Math.max(4,Math.min(cw.size,p.w.size))+0.5*aInter/Math.max(3,p.aw.size);
+      if(p.own.some(o=>cdeps.includes(o)))sc+=0.2;else sc*=0.6;
+      if(sc>bs){bs=sc;best=p}}
+    c.score=+bs.toFixed(2);
+    if(best&&bs>=0.55){c.kind="update";c.id=best.it.id}else{c.kind="new";c.id=""}
+    if(c.kind==="update"&&!c.note)c.note=c.raw;
+    if(c.kind==="new")c.note=c.note?c.note+" "+c.raw:c.raw;
+    c.note=c.note.slice(0,600);c.on=true;
+  }
+  return cands.map(({_dept,raw,score,...c})=>Object.assign(c,{score}));
+}
+
 let cands=[], sampleFn=null, candShow="";
 $("#impDate").value=state.asof;
 $("#impFile").addEventListener("change",async e=>{
@@ -946,7 +1012,12 @@ $("#impFile").addEventListener("change",async e=>{
 $("#impRun").addEventListener("click",async()=>{
   const text=$("#impText").value.trim(),msg=$("#impMsg"),btn=$("#impRun");
   if(!text){msg.textContent="Upload or paste the minutes first.";return}
-  if(!sampleFn){msg.textContent="Asking Claude is not available in this view.";return}
+  if(!sampleFn){
+    const md=$("#impDate").value||state.asof;
+    cands=parseMinutes(text,items,md).map(c=>({kind:c.id?"update":"new",id:c.id||"",owner:c.owner,support:c.support||"",action:c.action,note:c.note||"",due:c.due||"",done:!!c.done,on:true}));
+    const nu=cands.filter(c=>c.id).length;
+    msg.textContent=cands.length?`Found ${cands.length} points: ${nu} match existing items, ${cands.length-nu} look new. Check the matches, untick anything that is not an action, then save.${canWrite?"":" Unlock editing to save."}`:"No department-wise instructions were found. Check that each department name is on its own line.";
+    renderCands();return}
   btn.disabled=true;msg.textContent="Reading the minutes. This takes about a minute…";
   const open=items.filter(active).map(it=>`${it.id} | ${it.owner} | ${it.action}`).join("\n");
   const prompt=`You help the PA (General) of the Mayiladuthurai District Collectorate (Tamil Nadu) track action items from the weekly HOD review meeting chaired by the District Collector. Minutes may mix Tamil and English.
@@ -994,7 +1065,13 @@ $("#impOut").addEventListener("input",e=>{const el=e.target.closest("[data-ci]")
 $("#impOut").addEventListener("click",async e=>{
   if(e.target.id!=="impSave"||!db)return;const btn=e.target;btn.disabled=true;
   const md=$("#impDate").value||state.asof,msg=$("#impMsg");let ok=0,fail=0;let next=parseInt(nextId().slice(2),10);
+  /* several points for the same Action ID become one history entry */
+  const sel=[],byId=new Map();
   for(const c of cands.filter(c=>c.on)){
+    if(c.id&&items.some(x=>x.id===c.id)){const g=byId.get(c.id);if(g){g.note=[g.note,c.note].filter(Boolean).join(" ");g.done=g.done||c.done;g.due=g.due||c.due;g._also.push(c);continue}
+      const m=Object.assign({},c,{_also:[c]});byId.set(c.id,m);sel.push(m)}else sel.push(Object.assign({},c,{_also:[c]}));
+  }
+  for(const c of sel){
     try{
       const it=c.id&&items.find(x=>x.id===c.id);
       if(it){const h=(it.history||[]).slice();h.push({d:md,t:c.note||"Reviewed in HOD meeting.",s:c.done?"Reported done":"",by:me||"",src:"minutes"});
@@ -1008,8 +1085,8 @@ $("#impOut").addEventListener("click",async e=>{
         await db.doc("actions/"+id).set({id,owner:c.owner||"Unassigned",support:c.support,action:c.action,first:md,last:md,times:1,due:c.due,status:"Open",evidence:"",remarks:"",
           history:[{d:md,t:c.note||"Instructed in HOD meeting.",s:"Open",by:me||"",src:"minutes"}],updatedAt:new Date().toISOString(),updatedBy:me||""});
       }
-      ok++;c.on=false;
-    }catch(err){fail++}
+      ok+=c._also.length;c._also.forEach(x=>x.on=false);
+    }catch(err){fail+=c._also.length}
   }
   msg.textContent=fail?`Saved ${ok}. ${fail} could not be saved; they are still ticked.`:`Saved ${ok} items from the ${dmy(md)} minutes.`;
   if(!fail)cands=[];renderCands();toast(`Saved ${ok} items`);
@@ -1057,7 +1134,7 @@ function notice(t){const n=$("#notice");n.textContent=t||"";n.hidden=!t}
 (async()=>{
   if(!window.claude||!claude.use){notice("The app could not start. Check your internet connection and reload.");return}
   claude.use("downloads").then(d=>{if(d)$("#exportBtn").hidden=false});
-  claude.use("sample").then(s=>{sampleFn=s;if(!s){$("#tab-import").hidden=true;$("#impRun").disabled=true;$("#impMsg").textContent="Import needs Claude, which is not available in this view."}});
+  claude.use("sample").then(s=>{sampleFn=s});
   {const t=location.hash.slice(1);if(TABS.includes(t)&&t!=="items")setTab(t)}
   user=await claude.use("user");
   if(user){try{me=await user.id()}catch(e){} try{const c=await user.can("data.write");if(c===false)canWrite=false}catch(e){}}
