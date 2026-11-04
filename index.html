@@ -222,6 +222,13 @@ body.side-collapsed .brand{padding-left:0;justify-content:center}
 body.side-collapsed .side-tog svg{transform:rotate(180deg)}
 body.side-collapsed nav.tabs button{justify-content:center;padding-inline:0}
 .menu-btn{display:none}
+.pager{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:space-between;margin-top:10px;font-size:13px}
+.pager:empty{display:none}
+.pg-nav{display:flex;gap:4px;align-items:center;flex-wrap:wrap}
+.pg-nav .btn{padding:5px 10px;min-width:36px}
+.pg-num[aria-current=page]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.pg-size{display:flex;gap:6px;align-items:center;color:var(--muted)}
+.pg-size select{padding:4px 6px}
 .editbox{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--soft)}
 .editbox[open]{display:flex;flex-direction:column;gap:10px}
 .editbox summary{cursor:pointer;font-weight:600;color:var(--accent)}
@@ -478,6 +485,7 @@ h2.sec{font-family:var(--f-display);font-size:19px;margin:0}
       </div>
       <div id="listBody"><div class="empty">Loading action items from the tracker…</div></div>
     </div>
+    <div class="pager" id="pager"></div>
   </section>
 
   <section id="view-score" hidden>
@@ -491,7 +499,7 @@ h2.sec{font-family:var(--f-display);font-size:19px;margin:0}
       <div class="filters"><input type="search" id="lgQ" placeholder="Find a department" style="flex:0 1 240px">
         <select id="lgSort" aria-label="Sort league"><option value="red">Sort: most Red</option><option value="open">Sort: most open</option><option value="oldest">Sort: oldest item</option><option value="l3">Sort: most with Collector</option><option value="name">Sort: name</option></select>
         <label class="opts" for="lgRed"><input type="checkbox" id="lgRed"> Only departments with Red items</label>
-        <label class="opts" for="lgL3"><input type="checkbox" id="lgL3"> Only with items at Collector level</label></div><div class="tbl" id="league"></div></div>
+        <label class="opts" for="lgL3"><input type="checkbox" id="lgL3"> Only with items at Collector level</label></div><div class="tbl" id="league"></div><div class="pager" id="lgPager"></div></div>
   </section>
 
   <section id="view-agenda" hidden>
@@ -699,6 +707,29 @@ function syncColF(){
   set("cfDep",state.cdep);set("cfAct",state.cact);set("cfSt",state.tally?"":state.st);
   set("cfStart",state.cstart);set("cfDue",["overdue","7","30","none"].includes(state.due)?state.due:"");set("cfAge",state.age);
 }
+/* ---------- pagination ---------- */
+const PG={items:{page:1,size:+(store("hod.pg.items")||25),sig:"",render:()=>renderList()},league:{page:1,size:+(store("hod.pg.league")||15),sig:"",render:()=>renderScore()}};
+function paginate(key,rows,sig){
+  const g=PG[key];if(sig!==undefined&&sig!==g.sig){g.sig=sig;g.page=1}
+  const size=g.size>0?g.size:rows.length||1,pages=Math.max(1,Math.ceil(rows.length/size));
+  g.page=Math.min(Math.max(1,g.page),pages);
+  const start=(g.page-1)*size,end=Math.min(rows.length,start+size);
+  return {rows:rows.slice(start,end),start,end,pages,total:rows.length,key};
+}
+function pagerHtml(pg){
+  const g=PG[pg.key];if(!pg.total)return "";
+  const nums=[];const add=n=>nums.push(n);
+  for(let n=1;n<=pg.pages;n++){if(n===1||n===pg.pages||Math.abs(n-g.page)<=1)add(n);else if(nums[nums.length-1]!=="…")add("…")}
+  const sizes=pg.key==="items"?[10,25,50,100,0]:[10,15,25,0];
+  return `<span class="pg-info">Showing <b>${pg.start+1}–${pg.end}</b> of <b>${pg.total}</b></span>
+   <span class="pg-nav">${pg.pages>1?`<button type="button" class="btn" data-pg="${pg.key}:${g.page-1}" ${g.page===1?"disabled":""} aria-label="Previous page">‹ Prev</button>`+
+     nums.map(n=>n==="…"?`<span class="ro">…</span>`:`<button type="button" class="btn pg-num" data-pg="${pg.key}:${n}" ${n===g.page?'aria-current="page"':""}>${n}</button>`).join("")+
+     `<button type="button" class="btn" data-pg="${pg.key}:${g.page+1}" ${g.page===pg.pages?"disabled":""} aria-label="Next page">Next ›</button>`:""}</span>
+   <label class="pg-size">Rows per page <select data-pgsize="${pg.key}">${sizes.map(n=>`<option value="${n}" ${n===g.size?"selected":""}>${n||"All"}</option>`).join("")}</select></label>`;
+}
+document.addEventListener("click",e=>{const b=e.target.closest("[data-pg]");if(!b||b.disabled)return;const [k,n]=b.dataset.pg.split(":");PG[k].page=+n;PG[k].render();
+  const top=k==="items"?$("#list"):$("#league");if(top&&top.getBoundingClientRect().top<0)top.scrollIntoView({block:"start",behavior:"smooth"})});
+document.addEventListener("change",e=>{const el=e.target.closest("[data-pgsize]");if(!el)return;const k=el.dataset.pgsize;PG[k].size=+el.value;PG[k].page=1;store("hod.pg."+k,String(el.value));PG[k].render()});
 function elapsed(it){
   if(!it.first)return '<span class="ro">–</span>';
   const end=active(it)?state.asof:(it.last||state.asof),d=Math.max(0,days(end,it.first));
@@ -720,11 +751,14 @@ function renderStartSel(){
 }
 function renderList(){
   syncColF();renderStartSel();renderMeetSel();const mob=window.innerWidth<=860;
-  const rows=filtered();
-  $("#count").textContent=loaded?`${rows.length} of ${items.length} items`:"";
+  const all=filtered();
+  const sigState={...state};delete sigState.tab;delete sigState.fuDep;
+  const pg=paginate("items",all,JSON.stringify(sigState));const rows=pg.rows;
+  $("#pager").innerHTML=loaded?pagerHtml(pg):"";
+  $("#count").textContent=loaded?`${all.length} of ${items.length} items`:"";
   if(!loaded){return}
   if(!items.length){$("#listBody").innerHTML=`<div class="empty">No action items yet. Use <b>New action</b> to record the first instruction from a meeting.</div>`;return}
-  if(!rows.length){$("#listBody").innerHTML=`<div class="empty">No items match these filters.</div>`;return}
+  if(!all.length){$("#listBody").innerHTML=`<div class="empty">No items match these filters.</div>`;return}
   $("#listBody").innerHTML=rows.map(it=>{const l=latestOf(it);return `<button type="button" class="row s-${ragOf(it)}" data-id="${esc(it.id)}">
     <span class="dept">${canWrite?'<span class="edit-hint" aria-hidden="true">✏️ Edit</span>':""}${esc(it.owner)}${it.officer?`<span class="off">${esc(it.officer)}</span>`:""}${it.support?`<span class="sup">with ${esc(it.support)}</span>`:""}</span>
     <span style="min-width:0"><div class="act">${esc(it.action)}<span class="id-sm">${esc(it.id)}</span></div>${l?`<div class="latest">${esc(l.t)}</div>`:""}</span>
@@ -936,9 +970,11 @@ function renderScore(){
     e.total++;if(active(it)){e.open++;e[ragOf(it)]++;e.oldest=Math.max(e.oldest,+weeks(it)||0);if((escOf(it)||{}).lvl===3)e.l3++}else if(it.status==="Done")e.closed++;deps.set(d,e)}
   const lq=$("#lgQ").value.trim().toLowerCase(),srt=$("#lgSort").value;
   const S={red:(a,b)=>b[1].R-a[1].R||b[1].oldest-a[1].oldest,open:(a,b)=>b[1].open-a[1].open||b[1].R-a[1].R,oldest:(a,b)=>b[1].oldest-a[1].oldest,l3:(a,b)=>b[1].l3-a[1].l3||b[1].R-a[1].R,name:(a,b)=>a[0].localeCompare(b[0])};
-  const rows=[...deps.entries()].filter(([d,e])=>e.open&&(!lq||d.toLowerCase().includes(lq))&&(!$("#lgRed").checked||e.R)&&(!$("#lgL3").checked||e.l3)).sort(S[srt]||S.red);
+  const allRows=[...deps.entries()].filter(([d,e])=>e.open&&(!lq||d.toLowerCase().includes(lq))&&(!$("#lgRed").checked||e.R)&&(!$("#lgL3").checked||e.l3)).sort(S[srt]||S.red);
+  const lpg=paginate("league",allRows,[lq,srt,$("#lgRed").checked,$("#lgL3").checked,state.asof].join("|"));const rows=lpg.rows;
+  $("#lgPager").innerHTML=pagerHtml(lpg);
   $("#league").innerHTML=`<table><thead><tr><th>#</th><th>Department (lead owner)</th><th class="num">Open</th><th class="num">Red</th><th class="num">Amber</th><th class="num">Green</th><th>RAG</th><th class="num">Oldest (wks)</th><th class="num">Closed</th><th class="num">With Collector</th></tr></thead><tbody>`+
-    (rows.length?"":`<tr><td colspan="10" class="ro" style="text-align:center;padding:20px">No departments match.</td></tr>`)+rows.map(([d,e],i)=>`<tr data-d="${esc(d)}"><td class="ro">${i+1}</td><td>${esc(d)}</td><td class="num">${e.open}</td><td class="num">${e.R||""}</td><td class="num">${e.A||""}</td><td class="num">${e.G||""}</td>
+    (allRows.length?"":`<tr><td colspan="10" class="ro" style="text-align:center;padding:20px">No departments match.</td></tr>`)+rows.map(([d,e],i)=>`<tr data-d="${esc(d)}"><td class="ro">${lpg.start+i+1}</td><td>${esc(d)}</td><td class="num">${e.open}</td><td class="num">${e.R||""}</td><td class="num">${e.A||""}</td><td class="num">${e.G||""}</td>
       <td><span class="mini">${["R","A","G"].filter(k=>e[k]).map(k=>`<span style="flex:${e[k]};background:${col[k]}"></span>`).join("")}</span></td><td class="num">${e.oldest}</td><td class="num">${e.closed}/${e.total}</td><td class="num">${e.l3||""}</td></tr>`).join("")+`</tbody></table>`;
 }
 ["lgQ","lgSort","lgRed","lgL3"].forEach(id=>$("#"+id).addEventListener(id==="lgQ"?"input":"change",renderScore));
