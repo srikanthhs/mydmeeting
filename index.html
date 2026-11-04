@@ -269,8 +269,12 @@ main{padding-block:18px 60px}
 .filters select{flex:0 1 220px}
 .count{color:var(--muted);font-size:12.5px;margin-left:auto}
 .list{background:var(--paper);border:1px solid var(--line);border-radius:8px;overflow:hidden}
-.row{display:grid;grid-template-columns:minmax(150px,15%) minmax(0,1fr) 124px 96px 124px 100px;gap:12px;align-items:start;padding:11px 14px;border-top:1px solid var(--line);cursor:pointer;background:none;border-left:0;border-right:0;border-bottom:0;width:100%;text-align:left}
+.row{display:grid;grid-template-columns:40px minmax(150px,15%) minmax(0,1fr) 124px 96px 124px 100px;gap:12px;align-items:start;padding:11px 14px;border-top:1px solid var(--line);cursor:pointer;background:none;border-left:0;border-right:0;border-bottom:0;width:100%;text-align:left}
 .row:first-child{border-top:0}
+.row .sn{color:var(--muted);font-size:12.5px;padding-top:1px}
+.grp{display:flex;justify-content:space-between;gap:10px;align-items:baseline;padding:8px 14px 8px 18px;background:var(--accent-soft);border-top:1px solid var(--line);font-size:13px}
+.grp b{color:var(--accent);font-size:13.5px}
+.grp span{color:var(--muted);font-size:12px;white-space:nowrap}
 .row:hover{background:var(--soft)}
 .edit-hint{float:right;font-size:11.5px;font-weight:600;color:var(--accent);opacity:0;margin-left:6px}
 .row:hover .edit-hint,.row:focus-visible .edit-hint{opacity:1}
@@ -398,10 +402,11 @@ h2.sec{font-family:var(--f-display);font-size:19px;margin:0}
 .ro{font-size:12.5px;color:var(--muted)}
 @media (max-width:860px){
   .tally{grid-template-columns:repeat(3,minmax(0,1fr))}
-  .row{grid-template-columns:minmax(0,1fr);gap:4px 10px}
+  .row{grid-template-columns:26px minmax(0,1fr);gap:4px 8px}
   .row.hdr,.row.cf{display:none}
-  .row .c-status,.row .c-start,.row .c-due,.row .c-wk{grid-column:1}
-  .row .c-meta{grid-column:1;display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;margin-top:6px;font-size:12.5px}
+  .row .sn{grid-row:1 / span 3}
+  .row .c-status,.row .c-start,.row .c-due,.row .c-wk{grid-column:2}
+  .row .c-meta{grid-column:2;display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;margin-top:6px;font-size:12.5px}
   .row .sub{display:inline;margin-left:4px}
   .row .c-wk .sub{display:none}
   .fu,.imp,.score-grid{grid-template-columns:1fr}
@@ -469,13 +474,14 @@ h2.sec{font-family:var(--f-display);font-size:19px;margin:0}
       <select id="escSel" aria-label="Escalation" hidden><option value="">Any escalation</option><option value="1">L1 · HOD</option><option value="2">L2 · DRO / PA (G)</option><option value="3">L3 · Collector</option><option value="23">L2 and L3</option></select>
       <select id="dueSel" aria-label="Target date"><option value="">Any target date</option><option value="overdue">Overdue</option><option value="7">Due in 7 days</option><option value="30">Due in 30 days</option><option value="none">No target date</option><option value="has">Has target date</option></select>
       <select id="ageSel" aria-label="Age"><option value="">Any age</option><option value="0-4">0–4 weeks</option><option value="4-8">4–8 weeks</option><option value="8-12">8–12 weeks</option><option value="12-999">12+ weeks</option></select>
-      <select id="sortSel" aria-label="Sort"><option value="">Sort: priority</option><option value="dept">Sort: department (A–Z)</option><option value="age">Sort: oldest first</option><option value="due">Sort: target date</option><option value="times">Sort: most meetings</option><option value="quiet">Sort: longest without update</option><option value="id">Sort: Action ID</option></select>
+      <select id="sortSel" aria-label="Sort"><option value="">Sort: dept with most issues</option><option value="dept">Sort: department (A–Z)</option><option value="prio">Sort: priority (worst first)</option><option value="age">Sort: oldest first</option><option value="due">Sort: target date</option><option value="times">Sort: most meetings</option><option value="quiet">Sort: longest without update</option><option value="id">Sort: Action ID</option></select>
       <button class="btn ghost" id="clearF" type="button">Clear filters</button>
       <span class="count" id="count"></span>
     </div>
     <div class="list" id="list">
-      <div class="row hdr"><span><button type="button" class="btn ghost" id="sortDept" style="padding:0;font:inherit;letter-spacing:inherit;text-transform:inherit;color:inherit" title="Sort by department">Department ↕</button></span><span>Action item</span><span>Status</span><span>Start date</span><span>Target date</span><span>Time elapsed</span></div>
+      <div class="row hdr"><span class="sn">#</span><span><button type="button" class="btn ghost" id="sortDept" style="padding:0;font:inherit;letter-spacing:inherit;text-transform:inherit;color:inherit" title="Switch between most issues first and A–Z">Department ↕</button></span><span>Action item</span><span>Status</span><span>Start date</span><span>Target date</span><span>Time elapsed</span></div>
       <div class="row cf" id="colF">
+        <span></span>
         <input type="search" id="cfDep" placeholder="Filter department" aria-label="Filter by department">
         <input type="search" id="cfAct" placeholder="Filter action item" aria-label="Filter by action item">
         <select id="cfSt" aria-label="Filter by status"><option value="active">Active</option><option value="">Any</option><option>Open</option><option>In progress</option><option>Done</option><option>Dropped</option></select>
@@ -645,11 +651,12 @@ const TALLY=[
   ["closed","Done or dropped",it=>!active(it),"done"],
 ];
 
+const leadDep=it=>splitDeps(it.owner)[0]||"Unassigned";
 function depMatch(it,dep){return !dep||splitDeps(it.owner).includes(dep)||splitDeps(it.support).includes(dep)}
 function filtered(){
   const t=TALLY.find(x=>x[0]===state.tally);
   const q=state.q.toLowerCase();
-  return items.filter(it=>{
+  const list=items.filter(it=>{
     if(state.tally){ if(!t[2](it)) return false; }
     else if(state.st==="active"){ if(!active(it)) return false; }
     else if(state.st && it.status!==state.st) return false;
@@ -670,7 +677,9 @@ function filtered(){
     if(state.age){const [a,b]=state.age.split("-").map(Number),w=+weeks(it)||0;if(w<a||w>=b) return false;}
     if(q){const l=latestOf(it);const hay=[it.id,it.owner,it.officer,it.support,it.action,l&&l.t,it.remarks].join(" ").toLowerCase(); if(!hay.includes(q)) return false;}
     return true;
-  }).sort((a,b)=>{
+  });
+  const cnt=new Map();for(const it of list){const k=leadDep(it);cnt.set(k,(cnt.get(k)||0)+1)}
+  return list.sort((a,b)=>{
     const rank=it=>({"R":0,"A":1,"G":2,"C":3}[ragOf(it)]*10+{"Chronic":0,"Silent - confirm":1,"Open":2,"Closed":3,"Dropped":4}[flagOf(it)]);
     const byId=a.id.localeCompare(b.id);
     switch(state.sort){
@@ -678,9 +687,10 @@ function filtered(){
       case "due": return (a.due||"9999").localeCompare(b.due||"9999")||byId;
       case "times": return (b.times||0)-(a.times||0)||byId;
       case "quiet": return lastTouch(a).localeCompare(lastTouch(b))||byId;
-      case "dept": return String(a.owner||"").localeCompare(String(b.owner||""),undefined,{sensitivity:"base"})||(overdue(b)-overdue(a))||(rank(a)-rank(b))||byId;
+      case "dept": return leadDep(a).localeCompare(leadDep(b),undefined,{sensitivity:"base"})||String(a.owner||"").localeCompare(String(b.owner||""))||(overdue(b)-overdue(a))||(rank(a)-rank(b))||byId;
       case "id": return byId;
-      default: return (overdue(b)-overdue(a))||(rank(a)-rank(b))||byId;
+      case "prio": return (overdue(b)-overdue(a))||(rank(a)-rank(b))||byId;
+      default: {const ka=leadDep(a),kb=leadDep(b);return (cnt.get(kb)-cnt.get(ka))||ka.localeCompare(kb,undefined,{sensitivity:"base"})||(overdue(b)-overdue(a))||(rank(a)-rank(b))||byId}
     }
   });
 }
@@ -759,7 +769,15 @@ function renderList(){
   if(!loaded){return}
   if(!items.length){$("#listBody").innerHTML=`<div class="empty">No action items yet. Use <b>New action</b> to record the first instruction from a meeting.</div>`;return}
   if(!all.length){$("#listBody").innerHTML=`<div class="empty">No items match these filters.</div>`;return}
-  $("#listBody").innerHTML=rows.map(it=>{const l=latestOf(it);return `<button type="button" class="row s-${ragOf(it)}" data-id="${esc(it.id)}">
+  const grouped=state.sort===""||state.sort==="dept";
+  const gcount=new Map();if(grouped)all.forEach(it=>{const k=leadDep(it);gcount.set(k,(gcount.get(k)||0)+1)});
+  let prevKey=null;
+  $("#listBody").innerHTML=rows.map((it,i)=>{const l=latestOf(it),k=leadDep(it);let gh="";
+    if(grouped&&k!==prevKey){const n=gcount.get(k),cont=i===0&&pg.start>0&&leadDep(all[pg.start-1])===k;
+      gh=`<div class="grp"><b>${esc(k)}</b><span>${n} item${n===1?"":"s"}${cont?" (continued)":""}</span></div>`}
+    prevKey=k;
+    return gh+`<button type="button" class="row s-${ragOf(it)}" data-id="${esc(it.id)}">
+    <span class="sn num">${pg.start+i+1}</span>
     <span class="dept">${canWrite?'<span class="edit-hint" aria-hidden="true">✏️ Edit</span>':""}${esc(it.owner)}${it.officer?`<span class="off">${esc(it.officer)}</span>`:""}${it.support?`<span class="sup">with ${esc(it.support)}</span>`:""}</span>
     <span style="min-width:0"><div class="act">${esc(it.action)}<span class="id-sm">${esc(it.id)}</span></div>${l?`<div class="latest">${esc(l.t)}</div>`:""}</span>
     <span class="c-meta"><span class="c-status">${statusPill(it.status)}${escTag(it)}</span>
