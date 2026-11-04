@@ -26,7 +26,7 @@ img{max-width:100%}
 <script type="module">
 import {initializeApp} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import {getAuth,signInAnonymously} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-import {initializeFirestore,persistentLocalCache,collection,doc,getDoc,setDoc,updateDoc,onSnapshot} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+import {initializeFirestore,persistentLocalCache,collection,doc,getDoc,setDoc,updateDoc,deleteDoc,onSnapshot} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
 /* Firebase project "mydmeeting-43bc1" (tracker only). Records live in the "hodActions" collection. */
 const firebaseConfig={
@@ -61,7 +61,8 @@ const db=fs&&{
   doc:p=>{const ref=doc(fs,COL,idOf(p));return{
     get:async()=>wrapDoc(await getDoc(ref)),
     set:d=>{if(!isEditor())return Promise.reject({code:"invalid_argument"});return setDoc(ref,d)},
-    update:d=>{if(!isEditor())return Promise.reject({code:"invalid_argument"});return updateDoc(ref,d)}}}
+    update:d=>{if(!isEditor())return Promise.reject({code:"invalid_argument"});return updateDoc(ref,d)},
+    delete:()=>{if(!isEditor())return Promise.reject({code:"invalid_argument"});return deleteDoc(ref)}}}
 };
 const user={
   id:async()=>isEditor()?adminName():"Viewer",
@@ -221,6 +222,10 @@ body.side-collapsed .brand{padding-left:0;justify-content:center}
 body.side-collapsed .side-tog svg{transform:rotate(180deg)}
 body.side-collapsed nav.tabs button{justify-content:center;padding-inline:0}
 .menu-btn{display:none}
+.editbox{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--soft)}
+.editbox[open]{display:flex;flex-direction:column;gap:10px}
+.editbox summary{cursor:pointer;font-weight:600;color:var(--accent)}
+.danger-btn{color:var(--chronic);border-color:var(--chronic)}
 .login-dlg{border:1px solid var(--line);border-radius:12px;padding:0;width:min(400px,calc(100vw - 32px));background:var(--paper);color:var(--ink);box-shadow:var(--shadow)}
 .login-dlg::backdrop{background:rgba(10,15,20,.45)}
 .login-form{display:flex;flex-direction:column;gap:12px;padding:20px}
@@ -260,6 +265,9 @@ main{padding-block:18px 60px}
 .row{display:grid;grid-template-columns:minmax(150px,15%) minmax(0,1fr) 124px 96px 124px 100px;gap:12px;align-items:start;padding:11px 14px;border-top:1px solid var(--line);cursor:pointer;background:none;border-left:0;border-right:0;border-bottom:0;width:100%;text-align:left}
 .row:first-child{border-top:0}
 .row:hover{background:var(--soft)}
+.edit-hint{float:right;font-size:11.5px;font-weight:600;color:var(--accent);opacity:0;margin-left:6px}
+.row:hover .edit-hint,.row:focus-visible .edit-hint{opacity:1}
+@media (hover:none){.edit-hint{opacity:1}}
 .row.hdr{cursor:default;background:var(--soft);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;padding-block:8px}
 .id{font-family:var(--f-mono);font-size:12.5px;color:var(--muted);padding-top:1px}
 .dept{font-weight:700;font-size:13.5px;line-height:1.3;overflow-wrap:anywhere}
@@ -718,7 +726,7 @@ function renderList(){
   if(!items.length){$("#listBody").innerHTML=`<div class="empty">No action items yet. Use <b>New action</b> to record the first instruction from a meeting.</div>`;return}
   if(!rows.length){$("#listBody").innerHTML=`<div class="empty">No items match these filters.</div>`;return}
   $("#listBody").innerHTML=rows.map(it=>{const l=latestOf(it);return `<button type="button" class="row s-${ragOf(it)}" data-id="${esc(it.id)}">
-    <span class="dept">${esc(it.owner)}${it.officer?`<span class="off">${esc(it.officer)}</span>`:""}${it.support?`<span class="sup">with ${esc(it.support)}</span>`:""}</span>
+    <span class="dept">${canWrite?'<span class="edit-hint" aria-hidden="true">✏️ Edit</span>':""}${esc(it.owner)}${it.officer?`<span class="off">${esc(it.officer)}</span>`:""}${it.support?`<span class="sup">with ${esc(it.support)}</span>`:""}</span>
     <span style="min-width:0"><div class="act">${esc(it.action)}<span class="id-sm">${esc(it.id)}</span></div>${l?`<div class="latest">${esc(l.t)}</div>`:""}</span>
     <span class="c-meta"><span class="c-status">${statusPill(it.status)}${escTag(it)}</span>
     <span class="c-start num">${mob?'<span class="ro">Started </span>':""}${it.first?dmy(it.first):'<span class="ro">–</span>'}</span>
@@ -783,6 +791,15 @@ function openDrawer(it){
     <label class="field" for="fNote"><span>Instruction as recorded in minutes</span><textarea id="fNote" rows="2" placeholder="Optional"></textarea></label>
     <datalist id="depList">${allDeps().map(([d])=>`<option value="${esc(d)}">`).join("")}</datalist>`;
   } else {
+    if(canWrite)h+=`<details class="editbox" id="editBox"><summary>✏️ Edit action, department or dates</summary>
+      <label class="field" for="eAction"><span>Action item</span><textarea id="eAction" rows="3">${esc(it.action)}</textarea></label>
+      <div class="grid2"><label class="field" for="eOwner"><span>Owner department</span><input type="text" id="eOwner" list="depList" value="${esc(it.owner)}"></label>
+      <label class="field" for="eSupport"><span>Supporting department</span><input type="text" id="eSupport" list="depList" value="${esc(it.support)}"></label></div>
+      <div class="grid2"><label class="field" for="eFirst"><span>Start date (first raised)</span><input type="date" id="eFirst" value="${esc(it.first)}"></label>
+      <label class="field" for="eTimes"><span>Meetings raised in</span><input type="text" inputmode="numeric" id="eTimes" value="${esc(it.times||1)}"></label></div>
+      <div class="opts"><button class="btn danger-btn" type="button" id="eDelete">Delete this item</button><span class="ro">Use only for wrong or duplicate entries.</span></div>
+      <datalist id="depList">${allDeps().map(([d])=>`<option value="${esc(d)}">`).join("")}</datalist>
+    </details>`;
     h+=`<div class="facts"><div>First raised<b>${dmy(it.first)}</b></div><div>Last raised<b>${dmy(it.last)}</b></div><div>Meetings<b>${it.times||0}</b></div></div>
     <div>${ragPill(it)} ${flagPill(it)} ${escTag(it).replace("<span class=\"esc","<span style=\"display:inline\" class=\"esc")} ${it.support?`<span class="ro">&nbsp;Supporting: ${esc(it.support)}</span>`:""}</div>
     <div class="grid2"><label class="field" for="fStatus"><span>Status</span><select id="fStatus" ${dis}>${STATUSES.map(s=>`<option ${s===it.status?"selected":""}>${s}</option>`).join("")}</select></label>
@@ -802,6 +819,9 @@ function openDrawer(it){
   $("#dMsg").textContent=canWrite?"":"You can view this tracker but not change it.";
   $("#dSave").textContent=isNew?"Add action":"Save";
   $("#scrim").hidden=false;$("#drawer").hidden=false;
+  const dl=$("#eDelete");if(dl)dl.addEventListener("click",async()=>{
+    if(!confirm(`Delete ${it.id} permanently?\n\n${it.action}`))return;
+    try{await db.doc("actions/"+it.id).delete();toast(`Deleted ${it.id}`);closeDrawer()}catch(e){$("#dMsg").textContent="Could not delete. Check your connection and try again."}});
   const q=$("#qDone");if(q)q.addEventListener("click",()=>{$("#fStatus").value="Done";if(!$("#fEvidence").value)$("#fEvidence").value=meetText("done");if(!$("#fNote").value)$("#fNote").value="Closed in HOD meeting.";$("#dSave").focus()});
   setTimeout(()=>($("#fAction")||$("#fStatus")||$("#dClose")).focus(),30);
   resolveNames();
@@ -842,13 +862,24 @@ async function save(){
       if(evidence!==(it.evidence||"")) patch.evidence=evidence;
       if(remarks!==(it.remarks||"")) patch.remarks=remarks;
       const officer=$("#fOfficer").value.trim(); if(officer!==(it.officer||"")) patch.officer=officer;
+      const edited=[];
+      if($("#eAction")){
+        const ea=$("#eAction").value.trim(),eo=$("#eOwner").value.trim(),es=$("#eSupport").value.trim(),ef=$("#eFirst").value,et=parseInt($("#eTimes").value,10);
+        if(!ea||!eo){msg.textContent="The action item and owner department cannot be empty.";return}
+        if(ea!==it.action){patch.action=ea;edited.push("action")}
+        if(eo!==(it.owner||"")){patch.owner=eo;edited.push("department")}
+        if(es!==(it.support||"")){patch.support=es;edited.push("supporting department")}
+        if(ef&&ef!==(it.first||"")){patch.first=ef;edited.push("start date");if(it.last&&ef>it.last)patch.last=ef}
+        if(et>0&&et!==(it.times||0)){patch.times=et;edited.push("meeting count")}
+      }
       if(status==="Done"&&!evidence&&it.status!=="Done"){msg.textContent="Add the ATR or photo evidence before marking this Done.";return}
-      if(note||patch.status){
+      if(note||patch.status||edited.length){
         const h=(it.history||[]).slice();
-        h.push({d:nd,t:note||`Status changed to ${status}.`,s:patch.status||"",by:me||""});
+        const t=[note||(patch.status?`Status changed to ${status}.`:""),edited.length?`Edited ${edited.join(", ")}.`:""].filter(Boolean).join(" ");
+        h.push({d:nd,t,s:patch.status||"",by:me||""});
         patch.history=h;
       }
-      if(reviewed&&(note||patch.status)&&(!it.last||nd>it.last)){patch.last=nd;patch.times=(it.times||0)+1}
+      if(reviewed&&(note||patch.status)&&(!it.last||nd>it.last)){patch.last=nd;if(!("times" in patch))patch.times=(it.times||0)+1}
       if(!Object.keys(patch).length){closeDrawer();return}
       patch.updatedAt=new Date().toISOString();patch.updatedBy=me||"";
       await db.doc("actions/"+it.id).update(patch);
